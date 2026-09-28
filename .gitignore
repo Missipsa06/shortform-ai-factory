@@ -1,0 +1,104 @@
+# Environnement Python
+.conda/
+Env1/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Caches d'outillage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+
+# Graphe de connaissances généré par graphify : 56 Mo de cache, près de la
+# moitié des fichiers du dépôt. Se reconstruit à la demande (`/graphify`).
+graphify-out/
+
+# Réglages personnels de Claude Code. `.claude/settings.json`, partagé par
+# l'équipe, resterait suivi s'il existait.
+.claude/settings.local.json
+
+# Variables d'environnement
+# `.env.example` est volontairement suivi : c'est la documentation des variables.
+.env
+*.env
+!.env.example
+
+# Données produites — 1,3 Go à ce jour, rien n'a sa place dans le dépôt.
+data/
+
+# Médias générés
+*.mp4
+*.mp3
+*.wav
+*.srt
+*.png
+*.jpg
+*.jpeg
+
+# ...sauf les visuels de marque, qui font partie du projet et non de sa sortie.
+# Sans ces exceptions, les règles ci-dessus emporteraient le logo de la chaîne.
+!content/assets/brand/*.png
+!content/assets/brand/*.jpg
+
+# Documentation de travail, gardée en local.
+# RUNBOOK.md, lui, est suivi : le README y renvoie, et il ne contient que la
+# procédure d'exploitation.
+CLAUDE.md
+
+# Scripts d'expérimentation : ils substituent des constantes du pipeline pour
+# éprouver une hypothèse, et n'ont pas vocation à être livrés.
+essais/
+
+# Slides générées
+*.pptx
+
+# Base de données locale
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Streamlit
+.streamlit/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Airflow / Astro
+# `.astro/config.yaml` reste suivi : il porte le nom du projet, que l'équipe
+# partage. Seuls les états locaux sont exclus.
+airflow_settings.yaml
+.astro/standalone/
+.astro/worktrees/
+.astro/*.local.yml
+.astro/*.local.yaml
+.astro/config.yaml.lock
+airflow-webserver.pid
+webserver_config.py
+airflow.cfg
+airflow.db

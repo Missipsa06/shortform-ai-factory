@@ -1,0 +1,85 @@
+# Compléments au compose généré par Astro.
+#
+# Astro monte dags/, include/, plugins/ et tests/ dans les conteneurs, mais pas
+# data/ : sans ce fichier, les vidéos produites resteraient prisonnières des
+# conteneurs. Les listes de volumes sont fusionnées par point de montage, elles
+# s'ajoutent donc à celles définies par Astro.
+#
+# Les images intermédiaires du rendu (des milliers de JPEG) ne passent jamais par
+# ce montage : elles sont écrites dans le système de fichiers du conteneur, un
+# bind-mount Windows serait catastrophique sur ce volume de petits fichiers.
+
+x-donnees: &donnees
+  volumes:
+    - ./data:/usr/local/airflow/data
+    # Le modèle de transcription est téléchargé au premier appel : ce cache lui
+    # évite d'être retéléchargé à chaque recréation de conteneur.
+    - cache-modeles:/home/astro/.cache/huggingface
+    # Même raison pour le modèle de vectorisation (220 Mo). Volume distinct
+    # plutôt que montage de tout `.cache` : le cache Whisper existant garde sa
+    # place et n'a pas à être reconstruit.
+    - cache-embeddings:/home/astro/.cache/fastembed
+  environment:
+    # Depuis un conteneur, la base se joint par son nom de service, pas par
+    # localhost — ce réglage prime sur la valeur du .env, prévue pour l'usage local.
+    CONTENU_DB_URL: postgresql://postgres:postgres@postgres:5432/contenu
+
+services:
+  # Astro publie Postgres sur un port hôte aléatoire (18337, 5433, … selon le
+  # démarrage), alors que CONTENU_DB_URL dans .env attend un port stable. Sans ce
+  # réglage, tout usage local — `make veille-video`, `make psql`, le dashboard
+  # hors conteneur — échoue sur un timeout après chaque redémarrage de la stack.
+  # Même raison que le port fixe de l'UI ci-dessous.
+  #
+  # 55432 et non 5432 : ce dernier est refusé par Docker sur cette machine
+  # (« address already in use » alors que rien n'écoute), et un port hors du
+  # défaut évite en prime toute collision avec un Postgres installé localement.
+  postgres:
+    ports:
+      - "55432:5432"
+
+  scheduler:
+    <<: *donnees
+  triggerer:
+    <<: *donnees
+  dag-processor:
+    <<: *donnees
+  api-server:
+    <<: *donnees
+    # Astro attribue un port aléatoire à chaque démarrage (8080 étant occupé sur
+    # cette machine), ce qui change l'URL de l'UI à chaque fois. On publie en
+    # plus un port fixe : http://localhost:8081 reste valable d'une session à l'autre.
+    ports:
+      - "8081:8080"
+
+  # Interface de validation humaine. Même Dockerfile que le pipeline, autre commande.
+  # Astro ne construit que sa propre image : celle-ci porte un tag explicite,
+  # construit par `make up` avant le démarrage de la stack.
+  streamlit:
+    image: shortform-ai-factory-dashboard:latest
+    build:
+      context: .
+    command: >
+      streamlit run validation/dashboard.py
+      --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    ports:
+      - "8501:8501"
+    environment:
+      # Nom du service Postgres sur le réseau interne du compose.
+      CONTENU_DB_URL: postgresql://postgres:postgres@postgres:5432/contenu
+    env_file:
+      - .env
+    volumes:
+      - ./data:/usr/local/airflow/data
+      - ./validation:/usr/local/airflow/validation
+    depends_on:
+      - postgres
+    # Sans ce rattachement, le service atterrit sur le réseau `default` du projet
+    # et ne résout pas l'hôte `postgres`, qui vit sur le réseau d'Astro.
+    networks:
+      - airflow
+    restart: unless-stopped
+
+volumes:
+  cache-modeles:
+  cache-embeddings:

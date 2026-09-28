@@ -1,0 +1,40 @@
+[project]
+name = "shortform-ai-factory"
+version = "0.1.0"
+description = "Pipeline automatisé de production de vidéos courtes IA/Data Science pour TikTok et Reels"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "edge-tts>=7.2.8",
+    "fastembed>=0.8.0",
+    "lxml>=6.1.1",
+    "nvidia-riva-client>=2.27.0",
+    "openai>=2.54.0",
+    "playwright>=1.62.0",
+    "psycopg[binary]>=3.3.4",
+    "python-dotenv>=1.2.2",
+    "python-pptx>=1.0.2",
+    "requests>=2.34.2",
+    "streamlit>=1.61.1",
+]
+
+[dependency-groups]
+# Transcription : isolée car elle télécharge un modèle et pèse plus lourd que le
+# reste. faster-whisper (CTranslate2) remplace openai-whisper et évite PyTorch.
+subtitles = [
+    "faster-whisper>=1.2.1",
+]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.uv]
+# Application, pas une bibliothèque : rien à construire ni à installer.
+package = false
+
+[tool.pytest.ini_options]
+# Sans ceci, pytest insère le dossier du fichier de test dans sys.path (mode
+# "prepend" par défaut, sans __init__.py) et non la racine du projet : les
+# imports `from content...`/`from media...` échouent avec "No module named
+# 'content'" alors que `python -m` fonctionne très bien.
+pythonpath = ["."]

@@ -1,0 +1,19 @@
+astro
+.git
+.env
+airflow_settings.yaml
+logs/
+.venv
+airflow.db
+airflow.cfg
+
+# Médias et bases : montés en volume à l'exécution, jamais dans l'image.
+# Sans cette exclusion, chaque build enverrait des dizaines de Mo de vidéos au démon.
+data/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.vscode/
+.idea/

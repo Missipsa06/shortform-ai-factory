@@ -1,0 +1,4 @@
+project:
+    name: shortform-ai-factory
+webserver:
+    port: "8081"
