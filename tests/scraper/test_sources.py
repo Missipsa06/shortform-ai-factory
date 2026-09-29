@@ -148,7 +148,7 @@ def test_un_article_sans_corps_est_ignore(sans_reseau):
 
 def test_flux_injoignable_ne_leve_pas(monkeypatch):
     """Une source en panne ne doit pas interrompre la veille : les autres
-    continuent. Même règle que pour Papers With Code."""
+    continuent."""
     monkeypatch.setattr(sources, "_articles_rss", lambda _url: [])
     assert list(scrape_montreal_ai_ethics(limit=5)) == []
     assert list(scrape_nist(limit=5)) == []
@@ -205,7 +205,6 @@ def test_les_entites_html_des_titres_sont_developpees(sans_reseau):
 @pytest.mark.parametrize("source,attendue", [
     ("arxiv", "technique"),
     ("huggingface_blog", "technique"),
-    ("papers_with_code", "technique"),
     ("montreal_ai_ethics", "societe"),
     ("nist", "societe"),
 ])

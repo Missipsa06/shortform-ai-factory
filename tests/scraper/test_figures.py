@@ -176,7 +176,7 @@ def test_auteur_extrait_du_chemin(url, attendu):
 # ── Dégradation ──────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("source,sid,url", [
-    ("papers_with_code", "abc", ""),
+    ("nist", "abc", ""),
     ("arxiv", "", ""),                 # identifiant manquant
     ("huggingface_blog", "", ""),      # url manquante
     ("", "", ""),

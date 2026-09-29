@@ -178,13 +178,3 @@ def caler_mots(
         i = j
 
     return resultat
-
-
-def caler_segment_json(
-    audio: Path, texte: str, taille_modele: str = "base"
-) -> list[dict]:
-    """Version sérialisable de caler_mots, pour passage dans un gabarit HTML."""
-    return [
-        {"mot": m.texte, "debut": round(m.debut, 3), "fin": round(m.fin, 3)}
-        for m in caler_mots(audio, texte, taille_modele)
-    ]

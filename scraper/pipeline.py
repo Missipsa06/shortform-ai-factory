@@ -69,7 +69,7 @@ def run_pipeline(source: str = "all", limit: int = 20) -> dict[str, int]:
     Lance le pipeline de scraping pour une ou toutes les sources.
 
     Args:
-        source: Nom de la source ('all', 'arxiv', 'huggingface_blog', 'papers_with_code')
+        source: Nom de la source ('all', 'arxiv', 'huggingface_blog', 'montreal_ai_ethics', 'nist')
         limit:  Nombre maximum d'articles par source
 
     Returns:

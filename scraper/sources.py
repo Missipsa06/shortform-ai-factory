@@ -1,7 +1,7 @@
 """
 Configuration et implémentation des scrapers par source.
 
-Techniques   : Arxiv, HuggingFace Blog, Papers With Code.
+Techniques   : Arxiv, HuggingFace Blog.
 Non techniques : Montreal AI Ethics (CC BY), NIST (domaine public) — voir la
 section « Sources non techniques » pour le critère de licence qui les a
 sélectionnées, et qui en a écarté une vingtaine d'autres.
@@ -232,65 +232,9 @@ def scrape_huggingface(limit: int = 10) -> Iterator[dict]:
         }
 
 
-# ---------------------------------------------------------------------------
-# Papers With Code
-# ---------------------------------------------------------------------------
-
-PWC_API = "https://paperswithcode.com/api/v1/papers/"
-
-
-def scrape_papers_with_code(limit: int = 10) -> Iterator[dict]:
-    """
-    Scrape les derniers papiers via l'API Papers With Code.
-
-    Yields:
-        dict avec les champs : source_id, title, url, summary, published, tags
-    """
-    logger.info("Scraping Papers With Code (limit=%d)...", limit)
-    params = {"ordering": "-published", "page_size": limit}
-
-    try:
-        resp = requests.get(PWC_API, params=params, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-    # `ValueError` d'abord : la JSONDecodeError de requests hérite à la fois de
-    # ValueError et de RequestException. Placée après, elle serait interceptée
-    # par la clause réseau et rapportée comme une panne de connexion — alors que
-    # le service répond, mais ne renvoie plus de JSON.
-    except ValueError:
-        # Ce n'est pas une erreur du pipeline : la veille continue avec les
-        # autres sources. En WARNING et non en ERROR, sinon chaque exécution
-        # quotidienne lève une alerte qui finit par masquer les vraies.
-        logger.warning(
-            "Papers With Code ne renvoie plus de JSON — l'API a fermé. "
-            "Sans effet : la veille continue avec les autres sources."
-        )
-        return
-    except requests.RequestException as e:
-        logger.warning("Papers With Code injoignable : %s", e)
-        return
-
-    papers = data.get("results", [])
-    logger.info("Papers With Code : %d papiers trouvés", len(papers))
-
-    for paper in papers:
-        source_id = paper.get("id", "")
-        title = paper.get("title", "")
-        url = paper.get("url_pdf") or f"https://paperswithcode.com/paper/{source_id}"
-        summary = paper.get("abstract", "")
-        published = (paper.get("published") or "")[:10]
-        tags = [m.get("name", "") for m in paper.get("methods", [])]
-
-        yield {
-            "source": "papers_with_code",
-            "source_id": str(source_id),
-            "title": title,
-            "url": url,
-            "summary": summary,
-            "published": published,
-            "tags": tags,
-            "raw": paper,
-        }
+# Papers With Code a été retiré : son API a fermé et ne renvoyait plus rien.
+# Un article déjà en base sous ce nom retombe sur PROFIL_INCONNU, classé
+# « technique » comme il l'était.
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +444,6 @@ def scrape_nist(limit: int = 10) -> Iterator[dict]:
 SOURCES: dict[str, callable] = {
     "arxiv": scrape_arxiv,
     "huggingface_blog": scrape_huggingface,
-    "papers_with_code": scrape_papers_with_code,
     "montreal_ai_ethics": scrape_montreal_ai_ethics,
     "nist": scrape_nist,
 }
@@ -536,7 +479,6 @@ NATURES = ("technique", "critique", "institution")
 PROFILS: dict[str, Profil] = {
     "arxiv": Profil("arXiv", "📄", "technique"),
     "huggingface_blog": Profil("HuggingFace Blog", "🤗", "technique"),
-    "papers_with_code": Profil("Papers With Code", "📊", "technique"),
     "montreal_ai_ethics": Profil("Montreal AI Ethics", "⚖️", "critique",
                                  MONTREAL_LICENCE),
     "nist": Profil("NIST", "🏛️", "institution", NIST_LICENCE),

@@ -19,7 +19,6 @@ Prérequis dans .env :
 
 import argparse
 import base64
-import hashlib
 import logging
 import os
 import json
@@ -158,20 +157,6 @@ def _cf_identifiants() -> tuple[str, str]:
     return compte, jeton
 
 
-def _graine(query: str, filename: str) -> int:
-    """
-    Graine dérivée de la requête et du nom de fichier.
-
-    Conservée bien que `flux-1-schnell` la refuse (« Additional or unevaluated
-    properties '/seed' not allowed », vérifié contre l'API) : d'autres modèles
-    de Workers AI l'acceptent, et `CLOUDFLARE_IMAGE_MODEL` permet d'en changer.
-    Voir `_generer_cloudflare` pour la façon dont la reproductibilité est
-    obtenue malgré ce refus.
-    """
-    empreinte = hashlib.sha256(f"{query}|{filename}".encode("utf-8")).hexdigest()
-    return int(empreinte[:8], 16)
-
-
 def _generer_cloudflare(
     query: str, output_dir: Path, filename: str, reessais: int = 2
 ) -> "Path | None":
@@ -196,10 +181,7 @@ def _generer_cloudflare(
     # reproductible côté serveur — c'est le cache disque qui joue ce rôle : une
     # image obtenue est conservée et réutilisée, si bien qu'un rendu rejoué
     # affiche exactement les mêmes visuels.
-    corps: dict = {"prompt": f"{query}. {CF_STYLE}", "steps": CF_ETAPES}
-    if modele != CF_MODELE_DEFAUT:
-        # Un autre modèle peut accepter la graine ; on la lui passe alors.
-        corps["seed"] = _graine(query, filename)
+    corps = {"prompt": f"{query}. {CF_STYLE}", "steps": CF_ETAPES}
 
     try:
         reponse = requests.post(

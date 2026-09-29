@@ -608,31 +608,6 @@ def step_render(script_path: Path, segments_dir: Path,
     return clips
 
 
-def step_slides(script_path: Path, images: "dict[str, Path] | None" = None) -> list[Path]:
-    """
-    Génération des slides en PNG statiques.
-
-    Conservée pour l'ancien montage sur images fixes et pour un aperçu rapide
-    sans passer par le rendu vidéo, plus long.
-
-    Returns:
-        Liste des fichiers PNG générés
-    """
-    import asyncio as _asyncio
-    from content.slides import generate_html_slides
-    from content.export import _screenshot_slides
-
-    html_files = generate_html_slides(script_path, images=images)
-    logger.info("%d slides HTML générées", len(html_files))
-
-    png_dir = script_path.parent / script_path.stem / "png"
-    png_dir.mkdir(parents=True, exist_ok=True)
-
-    png_files = _asyncio.run(_screenshot_slides(html_files, png_dir))
-    logger.info("%d PNG exportés dans %s", len(png_files), png_dir)
-    return png_files
-
-
 def step_tts(script_path: Path, voice: str, tts_provider: "str | None" = None) -> tuple[Path, Path]:
     """
     Étape 4 : synthèse vocale.

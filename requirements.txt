@@ -115,9 +115,7 @@ jsonschema-specifications==2025.9.1
 loguru==0.7.3
     # via fastembed
 lxml==6.1.1
-    # via
-    #   python-pptx
-    #   shortform-ai-factory
+    # via shortform-ai-factory
 markupsafe==3.0.3
     # via jinja2
 mmh3==5.2.1
@@ -156,7 +154,6 @@ pandas==3.0.5
 pillow==12.3.0
     # via
     #   fastembed
-    #   python-pptx
     #   streamlit
 playwright==1.62.0
     # via shortform-ai-factory
@@ -197,8 +194,6 @@ python-dotenv==1.2.2
     # via shortform-ai-factory
 python-multipart==0.0.32
     # via streamlit
-python-pptx==1.0.2
-    # via shortform-ai-factory
 pyyaml==6.0.3
     # via
     #   ctranslate2
@@ -261,7 +256,6 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   pyee
-    #   python-pptx
     #   referencing
     #   starlette
     #   streamlit
@@ -284,7 +278,5 @@ websockets==15.0.1
     #   streamlit
 win32-setctime==1.2.0 ; sys_platform == 'win32'
     # via loguru
-xlsxwriter==3.2.9
-    # via python-pptx
 yarl==1.24.5
     # via aiohttp
