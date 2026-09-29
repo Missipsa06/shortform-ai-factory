@@ -10,33 +10,14 @@ obligatoire sur validation humaine** avant toute mise en ligne.
 
 ## Architecture
 
-```
-                    ┌───────────────────────────────────────────┐
-   cron quotidien ─▶│  DAG veille_quotidienne                   │
-                    │  Arxiv ┃ HuggingFace ┃ MAIEI ┃ NIST       │
-                    │        └──────┬──────┘                     │
-                    │        vectorisation sémantique            │
-                    └───────────────┼───────────────────────────┘
-                                    ▼
-                     Postgres : file de sujets + vecteurs
-                                    │
-                    ┌───────────────┼───────────────────────────┐
-   déclenchement ──▶│  DAG produire_video (params)              │
-   manuel           │                                           │
-                    │  sélection des sources ─▶ script LLM       │
-                    │           │                                │
-                    │      validation ─┬─▶ illustrations ─┐      │
-                    │                  └─▶ voix ──────────┴─▶ rendu animé
-                    │                                            │
-                    │                        montage ◀───────────┘
-                    │                            │               │
-                    │              ⏸ attente de validation humaine│
-                    │                            │               │
-                    │           publication TikTok / export Drive│
-                    └────────────────────────────────────────────┘
-                                    ▲
-                  Streamlit : lancer, suivre, approuver / rejeter
-```
+![Pipeline : la veille collecte et indexe des articles dans une file Postgres ; le DAG de production en tire un résumé réel pour écrire le script, synthétise la voix puis rend la vidéo ; un humain la valide avant de déclencher la publication.](docs/pipeline.png)
+
+Deux DAGs reliés par une file d'articles : `veille_quotidienne` (cron) collecte
+et indexe, `produire_video` (déclenché, avec paramètres) en consomme un pour
+fabriquer la vidéo. Le point focal, en cyan, est le passage du **résumé réel** au
+script : c'est lui qui décide de la qualité. Illustrations, figures d'articles et
+agent MCP sont omis du schéma pour le garder lisible ; ils sont décrits plus bas.
+Version HTML : [pipeline.html](pipeline.html).
 
 **Principes de conception :**
 
@@ -171,7 +152,7 @@ d'environnement choisit le moteur, une option de ligne de commande le surcharge.
 | Script | `LLM_PROVIDER` | `gemini`, `mistral`, `openrouter`, `nvidia`, `kimi` | `mistral` |
 | Voix | `TTS_PROVIDER` | `gemini` (Charon), `nvidia` (Louise, Pascal), `edge` | `gemini` |
 | Illustrations | `IMAGE_PROVIDER` | `pexels`, `cloudflare` | `pexels` |
-| Vecteurs | `EMBEDDING_PROVIDER` | `fastembed`, `mistral`, `gemini` | `fastembed` |
+| Vecteurs | `EMBEDDING_MODEL` | tout modèle fastembed (local) | MiniLM multilingue |
 
 **Repli automatique.** Un quota journalier épuisé ou un service surchargé ne doit
 pas coûter une exécution entière. `content/quota.py` distingue les 429 « par
@@ -314,4 +295,3 @@ publication.
 - Figures d'article en mode multi-sources (pas encore d'article principal désigné)
 - Éprouver les onze figures sur de vraies sorties de LLM, pas seulement des scripts écrits à la main
 - Traçabilité des licences en base (seules les sources RSS en déclarent une, rien n'est stocké), attribution Pexels
-- Retirer le convertisseur python-pptx orphelin de `content/export.py`

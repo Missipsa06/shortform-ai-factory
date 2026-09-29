@@ -57,7 +57,6 @@ CLOUDFLARE_ACCOUNT_ID=...   # section Workers AI du tableau de bord
 CLOUDFLARE_API_TOKEN=...    # droits « Workers AI — Read » ET « Edit »
 IMAGE_SLIDES_SCHEMA=        # 0 : prive d'illustration les slides à schéma
 
-EMBEDDING_PROVIDER=fastembed   # local, sans clé ni quota
 DRIVE_EXPORT_DIR=              # dossier synchronisé, pour `make export-drive`
 
 CONTENU_DB_URL=postgresql://postgres:postgres@127.0.0.1:55432/contenu

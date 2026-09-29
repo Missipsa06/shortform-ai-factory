@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline IA.Maline · Data flow</title>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&amp;family=Space+Grotesk:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #0D0D1A; --paper-2: #161630; --ink: #EAEEF7; --muted: #95A1BC;
+      --soft: #95A1BC; --rule: #34405A; --rule-solid: #5C6A8A;
+      --accent: #00D4FF; --accent-tint: #102630;
+      --title: 'Space Grotesk', sans-serif; --sans: 'Manrope', sans-serif;
+      --mono: Consolas, ui-monospace, monospace;
+    }
+    body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 3rem 2rem; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+    .frame { width: 100%; max-width: 1200px; }
+    .eyebrow { margin-bottom: 0.5rem; color: var(--muted); font: 400 0.75rem var(--mono); letter-spacing: 0.18em; text-transform: uppercase; }
+    h1 { margin-bottom: 0.5rem; color: var(--ink); font: 600 clamp(1.75rem, 2.4vw + 1rem, 3rem)/1.1 var(--title); letter-spacing: -0.02em; }
+    .subtitle { margin-bottom: 2rem; max-width: 44rem; color: var(--muted); font: 400 1rem/1.5 var(--sans); }
+    .scroll { overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 840px; }
+    .step-number, .step-label, .lane-label, .role-text, .chip-text, .legend-label { font-family: var(--mono); text-anchor: middle; }
+    .step-number { fill: var(--ink); font-size: 7px; font-weight: 600; }
+    .step-label { fill: var(--muted); font-size: 7px; letter-spacing: 0.12em; }
+    .lane-label { fill: var(--muted); font-size: 8px; letter-spacing: 0.14em; }
+    .role-text { fill: var(--ink); font-size: 6px; font-weight: 600; }
+    .node-title { fill: var(--ink); font: 600 9px var(--title); text-anchor: middle; }
+    .node-sub { fill: var(--muted); font: 400 6.5px var(--mono); text-anchor: middle; }
+    .node-tool { fill: var(--soft); font: 400 6.5px var(--mono); text-anchor: middle; opacity: 0.8; }
+    .chip-text { fill: #fff; font-size: 5px; font-weight: 700; }
+    .focal-text { fill: var(--accent); }
+    .gate-text { fill: #d97a78; }
+    .legend-label { fill: var(--muted); font-size: 7px; letter-spacing: 0.12em; text-anchor: end; }
+    .legend-text { fill: var(--muted); font: 400 7px var(--sans); }
+    footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid var(--rule); color: var(--muted); font: 400 0.75rem var(--mono); }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Data flow · shortform-ai-factory</p>
+    <h1>De la veille à la publication</h1>
+    <p class="subtitle">Deux DAGs, une file d'articles entre eux, et un arrêt humain obligatoire avant toute mise en ligne. Le script est écrit à partir d'un vrai résumé d'article, pas de mémoire.</p>
+
+    <div class="scroll">
+    <svg viewBox="0 0 840 456" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="pipeline-title pipeline-desc">
+      <title id="pipeline-title">Pipeline de production des vidéos courtes</title>
+      <desc id="pipeline-desc">La veille collecte et indexe des articles dans une file Postgres ; le DAG de production en tire un résumé réel pour écrire le script, synthétise la voix puis rend la vidéo ; un humain la valide avant de déclencher la publication sur TikTok ou vers Drive.</desc>
+      <defs>
+        <marker id="arr-muted" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#95A1BC"/></marker>
+        <marker id="arr-accent" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#00D4FF"/></marker>
+      </defs>
+      <rect width="840" height="456" fill="#0D0D1A"/>
+      <!-- Un seul couloir teinté : celui du DAG de production, cœur du pipeline -->
+      <rect x="0" y="116" width="840" height="80" fill="rgba(234,238,247,0.025)"/>
+
+      <!-- Structure : en-tête et couloirs -->
+      <line x1="0" y1="36" x2="840" y2="36" stroke="#34405A" stroke-width="0.8"/>
+      <line x1="0" y1="116" x2="840" y2="116" stroke="#34405A" stroke-width="0.8"/>
+      <line x1="0" y1="196" x2="840" y2="196" stroke="#34405A" stroke-width="0.8"/>
+      <line x1="0" y1="276" x2="840" y2="276" stroke="#34405A" stroke-width="0.8"/>
+      <line x1="0" y1="356" x2="840" y2="356" stroke="#34405A" stroke-width="0.8"/>
+      <line x1="140" y1="36" x2="140" y2="356" stroke="#34405A" stroke-width="0.8"/>
+
+      <g aria-label="Étapes">
+        <rect x="180" y="6" width="32" height="16" rx="8" fill="rgba(234,238,247,0.12)"/><text x="196" y="14" class="step-number">01</text><text x="196" y="29" class="step-label">COLLECTER</text>
+        <rect x="292" y="6" width="32" height="16" rx="8" fill="rgba(234,238,247,0.12)"/><text x="308" y="14" class="step-number">02</text><text x="308" y="29" class="step-label">INDEXER</text>
+        <rect x="404" y="6" width="32" height="16" rx="8" fill="rgba(0,212,255,0.22)"/><text x="420" y="14" class="step-number focal-text">03</text><text x="420" y="29" class="step-label focal-text">ÉCRIRE</text>
+        <rect x="516" y="6" width="32" height="16" rx="8" fill="rgba(234,238,247,0.12)"/><text x="532" y="14" class="step-number">04</text><text x="532" y="29" class="step-label">VOIX</text>
+        <rect x="628" y="6" width="32" height="16" rx="8" fill="rgba(234,238,247,0.12)"/><text x="644" y="14" class="step-number">05</text><text x="644" y="29" class="step-label">RENDRE</text>
+        <rect x="740" y="6" width="32" height="16" rx="8" fill="rgba(234,238,247,0.12)"/><text x="756" y="14" class="step-number">06</text><text x="756" y="29" class="step-label">PUBLIER</text>
+      </g>
+
+      <g aria-label="Couloirs">
+        <text x="70" y="72" class="lane-label">VEILLE</text><text x="70" y="84" class="lane-label">CRON</text>
+        <text x="70" y="152" class="lane-label">PRODUCTION</text><text x="70" y="164" class="lane-label">DAG</text>
+        <text x="70" y="232" class="lane-label">VALIDATION</text><text x="70" y="244" class="lane-label">HUMAINE</text>
+        <text x="70" y="312" class="lane-label">DIFFUSION</text><text x="70" y="324" class="lane-label">RÉSEAUX</text>
+      </g>
+
+      <!-- Connecteurs d'abord : les blocs masquent leurs extrémités -->
+      <path d="M246 76 H258" fill="none" stroke="#95A1BC" marker-end="url(#arr-muted)"/>
+      <path d="M358 76 H412 Q420 76 420 84 V124" fill="none" stroke="#00D4FF" stroke-width="1.2" marker-end="url(#arr-accent)"/>
+      <path d="M470 156 H482" fill="none" stroke="#95A1BC" marker-end="url(#arr-muted)"/>
+      <path d="M582 156 H594" fill="none" stroke="#95A1BC" marker-end="url(#arr-muted)"/>
+      <path d="M694 156 H748 Q756 156 756 164 V204" fill="none" stroke="#95A1BC" marker-end="url(#arr-muted)"/>
+      <path d="M756 268 V284" fill="none" stroke="#95A1BC" stroke-dasharray="4,3" marker-end="url(#arr-muted)"/>
+      <rect x="364" y="56" width="40" height="12" rx="2" fill="#0D0D1A"/>
+      <text x="384" y="65" fill="#00D4FF" font-size="8" font-family="Consolas, ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">RÉSUMÉ</text>
+
+      <!-- Veille : Collecte -->
+      <rect x="146" y="44" width="100" height="64" rx="6" fill="#161630" stroke="#5C6A8A"/>
+      <rect x="150" y="48" width="18" height="10" rx="3" fill="rgba(234,238,247,0.12)"/><text x="159" y="53" class="role-text">VEI</text>
+      <text x="196" y="67" class="node-title">Collecte</text><text x="196" y="79" class="node-sub">arXiv · HF · NIST · MAIEI</text><text x="196" y="91" class="node-tool">scraper/</text>
+      <rect x="150" y="98" width="16" height="8" rx="3" fill="#6e6479"/><text x="158" y="104" class="chip-text">WB</text>
+      <rect x="226" y="98" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="234" y="104" class="chip-text">DB</text>
+
+      <!-- Veille : File d'articles -->
+      <rect x="258" y="44" width="100" height="64" rx="6" fill="#161630" stroke="#5C6A8A"/>
+      <rect x="262" y="48" width="18" height="10" rx="3" fill="rgba(234,238,247,0.12)"/><text x="271" y="53" class="role-text">VEI</text>
+      <text x="308" y="67" class="node-title">File d'articles</text><text x="308" y="79" class="node-sub">résumés + vecteurs</text><text x="308" y="91" class="node-tool">Postgres · fastembed</text>
+      <rect x="262" y="98" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="270" y="104" class="chip-text">DB</text>
+      <rect x="338" y="98" width="16" height="8" rx="3" fill="#b8915a"/><text x="346" y="104" class="chip-text">TB</text>
+
+      <!-- Production : Script LLM (focal) -->
+      <rect x="370" y="124" width="100" height="64" rx="6" fill="#102630" stroke="#00D4FF" stroke-width="1.2"/>
+      <rect x="374" y="128" width="18" height="10" rx="3" fill="rgba(0,212,255,0.22)"/><text x="383" y="133" class="role-text focal-text">PRD</text>
+      <text x="420" y="147" class="node-title">Script LLM</text><text x="420" y="159" class="node-sub">résumé → JSON sourcé</text><text x="420" y="171" class="node-tool">content/llm.py</text>
+      <rect x="374" y="178" width="16" height="8" rx="3" fill="#b8915a"/><text x="382" y="184" class="chip-text">TB</text>
+      <rect x="450" y="178" width="16" height="8" rx="3" fill="#9c6b50"/><text x="458" y="184" class="chip-text">FL</text>
+
+      <!-- Production : Voix -->
+      <rect x="482" y="124" width="100" height="64" rx="6" fill="#161630" stroke="#5C6A8A"/>
+      <rect x="486" y="128" width="18" height="10" rx="3" fill="rgba(234,238,247,0.12)"/><text x="495" y="133" class="role-text">PRD</text>
+      <text x="532" y="147" class="node-title">Voix</text><text x="532" y="159" class="node-sub">par lots → durées</text><text x="532" y="171" class="node-tool">media/tts.py</text>
+      <rect x="486" y="178" width="16" height="8" rx="3" fill="#9c6b50"/><text x="494" y="184" class="chip-text">FL</text>
+      <rect x="562" y="178" width="16" height="8" rx="3" fill="#9c6b50"/><text x="570" y="184" class="chip-text">FL</text>
+
+      <!-- Production : Rendu animé -->
+      <rect x="594" y="124" width="100" height="64" rx="6" fill="#161630" stroke="#5C6A8A"/>
+      <rect x="598" y="128" width="18" height="10" rx="3" fill="rgba(234,238,247,0.12)"/><text x="607" y="133" class="role-text">PRD</text>
+      <text x="644" y="147" class="node-title">Rendu animé</text><text x="644" y="159" class="node-sub">seek(t) · karaoké</text><text x="644" y="171" class="node-tool">Playwright · FFmpeg</text>
+      <rect x="598" y="178" width="16" height="8" rx="3" fill="#9c6b50"/><text x="606" y="184" class="chip-text">FL</text>
+      <rect x="674" y="178" width="16" height="8" rx="3" fill="#9c6b50"/><text x="682" y="184" class="chip-text">FL</text>
+
+      <!-- Validation humaine : arrêt obligatoire (couleur de gouvernance) -->
+      <rect x="706" y="204" width="100" height="64" rx="6" fill="rgba(217,122,120,0.10)" stroke="rgba(217,122,120,0.45)"/>
+      <rect x="710" y="208" width="18" height="10" rx="3" fill="rgba(217,122,120,0.22)"/><text x="719" y="213" class="role-text gate-text">HUM</text>
+      <text x="756" y="227" class="node-title gate-text">Validation</text><text x="756" y="239" class="node-sub">approuver / rejeter</text><text x="756" y="251" class="node-tool">Streamlit</text>
+      <rect x="710" y="258" width="16" height="8" rx="3" fill="#9c6b50"/><text x="718" y="264" class="chip-text">FL</text>
+      <rect x="786" y="258" width="16" height="8" rx="3" fill="#9c6b50"/><text x="794" y="264" class="chip-text">FL</text>
+
+      <!-- Diffusion : Publication -->
+      <rect x="706" y="284" width="100" height="64" rx="6" fill="#161630" stroke="#5C6A8A"/>
+      <rect x="710" y="288" width="18" height="10" rx="3" fill="rgba(234,238,247,0.12)"/><text x="719" y="293" class="role-text">PUB</text>
+      <text x="756" y="307" class="node-title">Publication</text><text x="756" y="319" class="node-sub">TikTok SELF_ONLY · Drive</text><text x="756" y="331" class="node-tool">publish/</text>
+      <rect x="710" y="338" width="16" height="8" rx="3" fill="#9c6b50"/><text x="718" y="344" class="chip-text">FL</text>
+      <rect x="786" y="338" width="16" height="8" rx="3" fill="#6e6479"/><text x="794" y="344" class="chip-text">WB</text>
+
+      <!-- Légende : étapes -->
+      <text x="164" y="373" class="legend-label">ÉTAPES</text>
+      <rect x="180" y="364" width="24" height="12" rx="6" fill="rgba(234,238,247,0.12)"/><text x="192" y="372" class="step-number">01</text><text x="212" y="373" class="legend-text">Collecter</text>
+      <rect x="276" y="364" width="24" height="12" rx="6" fill="rgba(234,238,247,0.12)"/><text x="288" y="372" class="step-number">02</text><text x="308" y="373" class="legend-text">Indexer</text>
+      <rect x="372" y="364" width="24" height="12" rx="6" fill="rgba(0,212,255,0.22)"/><text x="384" y="372" class="step-number focal-text">03</text><text x="404" y="373" class="legend-text">Écrire</text>
+      <rect x="468" y="364" width="24" height="12" rx="6" fill="rgba(234,238,247,0.12)"/><text x="480" y="372" class="step-number">04</text><text x="500" y="373" class="legend-text">Voix</text>
+      <rect x="564" y="364" width="24" height="12" rx="6" fill="rgba(234,238,247,0.12)"/><text x="576" y="372" class="step-number">05</text><text x="596" y="373" class="legend-text">Rendre</text>
+      <rect x="660" y="364" width="24" height="12" rx="6" fill="rgba(234,238,247,0.12)"/><text x="672" y="372" class="step-number">06</text><text x="692" y="373" class="legend-text">Publier</text>
+
+      <!-- Légende : types de données -->
+      <text x="164" y="394" class="legend-label">DONNÉES</text>
+      <rect x="180" y="386" width="16" height="8" rx="3" fill="#6e6479"/><text x="188" y="392" class="chip-text">WB</text><text x="202" y="394" class="legend-text">Web public</text>
+      <rect x="260" y="386" width="16" height="8" rx="3" fill="#5e7a9b"/><text x="268" y="392" class="chip-text">DB</text><text x="282" y="394" class="legend-text">Articles bruts</text>
+      <rect x="352" y="386" width="16" height="8" rx="3" fill="#b8915a"/><text x="360" y="392" class="chip-text">TB</text><text x="374" y="394" class="legend-text">Corpus indexé</text>
+      <rect x="444" y="386" width="16" height="8" rx="3" fill="#9c6b50"/><text x="452" y="392" class="chip-text">FL</text><text x="466" y="394" class="legend-text">Fichier : JSON, MP3, MP4</text>
+      <text x="592" y="394" class="legend-text">puce gauche = entrée · droite = sortie</text>
+
+      <!-- Légende : signal -->
+      <text x="164" y="415" class="legend-label">SIGNAL</text>
+      <rect x="180" y="408" width="16" height="8" rx="2" fill="#102630" stroke="#00D4FF"/><text x="202" y="415" class="legend-text">Point focal : le script s'appuie sur un vrai résumé</text>
+      <rect x="400" y="408" width="16" height="8" rx="2" fill="rgba(217,122,120,0.10)" stroke="rgba(217,122,120,0.45)"/><text x="422" y="415" class="legend-text">Arrêt humain obligatoire avant publication</text>
+
+      <!-- Légende : flux -->
+      <text x="164" y="436" class="legend-label">FLUX</text>
+      <line x1="180" y1="433" x2="204" y2="433" stroke="#95A1BC" marker-end="url(#arr-muted)"/><text x="212" y="436" class="legend-text">Passage standard</text>
+      <line x1="300" y1="433" x2="324" y2="433" stroke="#00D4FF" stroke-width="1.2" marker-end="url(#arr-accent)"/><text x="332" y="436" class="legend-text">Passage focal</text>
+      <line x1="412" y1="433" x2="436" y2="433" stroke="#95A1BC" stroke-dasharray="4,3" marker-end="url(#arr-muted)"/><text x="444" y="436" class="legend-text">Déclenchement manuel (make publish)</text>
+    </svg>
+    </div>
+
+    <footer>Charte IA.Maline · Space Grotesk, Manrope · coupés pour la lisibilité : illustrations, figures d'articles, agent MCP</footer>
+  </main>
+</body>
+</html>

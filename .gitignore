@@ -49,6 +49,8 @@ data/
 # Sans ces exceptions, les règles ci-dessus emporteraient le logo de la chaîne.
 !content/assets/brand/*.png
 !content/assets/brand/*.jpg
+# ...et les schémas de la documentation, que le README affiche.
+!docs/*.png
 
 # Documentation de travail, gardée en local.
 # RUNBOOK.md, lui, est suivi : le README y renvoie, et il ne contient que la
