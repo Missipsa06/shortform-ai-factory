@@ -150,6 +150,31 @@ def test_mistral_zero_requete_par_minute():
     assert diag.epuise
 
 
+GOOGLE_GENERIQUE = ("You exceeded your current quota, please check your plan and "
+                    "billing details. For more information on this error, head to: "
+                    "https://ai.google.dev/gemini")
+
+
+def test_message_generique_google_par_minute_reste_minute():
+    """Google écrit « billing » sur tous ses 429 : c'est le quotaId qui tranche.
+    Observé le 29/09/2026 sur Gemini TTS, pris pour un compte suspendu."""
+    corps = {"error": {"message": GOOGLE_GENERIQUE, "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+         "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+                         "quotaValue": "3"}]},
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "20s"},
+    ]}}
+    diag = diagnostiquer(429, corps)
+    assert diag.genre == "minute"
+    assert diag.reessayable
+    assert diag.delai == 20.0
+
+
+def test_message_generique_google_sans_details_reste_minute():
+    diag = diagnostiquer(429, {"error": {"message": GOOGLE_GENERIQUE}})
+    assert diag.genre == "minute"
+
+
 def test_429_sans_information_reste_minute():
     """Sans identifiant de quota ni mention de suspension : hypothèse la moins coûteuse."""
     diag = diagnostiquer(429, {})

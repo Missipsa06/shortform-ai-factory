@@ -211,10 +211,14 @@ def diagnostiquer(statut: "int | None", corps: "str | dict | None" = None) -> Di
         # répond 429 en permanence : réessayer y perd du temps à chaque appel.
         # Constaté sur Moonshot — « suspended due to insufficient balance » — et
         # sur Mistral, qui annonce une limite de zéro requête par minute.
-        if any(
+        # Seulement quand le fournisseur ne nomme aucun quota : Google écrit
+        # « check your plan and billing details » sur TOUS ses 429, limite par
+        # minute comprise. Pris pour une suspension, ce texte arrêtait le pipeline
+        # jusqu'au lendemain là où quelques secondes d'attente suffisaient.
+        if not identifiant and any(
             marqueur in texte.lower()
             for marqueur in ("insufficient balance", "suspended", "recharge",
-                             "exceeded_current_quota", "billing")
+                             "exceeded_current_quota")
         ):
             return Diagnostic(
                 genre="jour",
