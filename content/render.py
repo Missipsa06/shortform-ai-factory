@@ -274,40 +274,126 @@ ARGS_CHROMIUM = [
 ]
 
 
+# Slides rendues en même temps, chacune dans sa page d'un même navigateur.
+# ponytail: 2 et pas plus — la mémoire est la ressource rare (échecs de capture
+# et d'encodage observés à 79 % de RAM). Monter seulement après mesure.
+PAGES_PARALLELES = 2
+
+
 async def _rendre(html_files: list[Path], durees: dict[str, int],
                   sortie_dir: Path) -> list[Path]:
-    """Rend toutes les slides avec un seul navigateur, réutilisé d'une slide à l'autre."""
+    """
+    Rend les slides en parallèle sur PAGES_PARALLELES pages d'un seul navigateur.
+
+    L'encodage FFmpeg part dans un thread : appelé directement, ce sous-processus
+    bloquerait la boucle d'événements et les captures de l'autre page avec lui.
+    L'ordre des clips rendus est celui des slides, quel que soit l'ordre de fin.
+    """
     from playwright.async_api import async_playwright
 
-    clips: list[Path] = []
     sortie_dir.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as p:
         navigateur = await p.chromium.launch(args=ARGS_CHROMIUM)
-        page = await navigateur.new_page(
-            viewport={"width": LARGEUR, "height": HAUTEUR}
-        )
-        try:
-            for html in html_files:
-                slide_id = html.stem
-                duree_ms = durees.get(slide_id, 4000)
-                clip = sortie_dir / f"{slide_id}.mp4"
+        pages: asyncio.Queue = asyncio.Queue()
+        for _ in range(min(PAGES_PARALLELES, len(html_files))):
+            await pages.put(await navigateur.new_page(
+                viewport={"width": LARGEUR, "height": HAUTEUR}
+            ))
 
+        async def une_slide(html: Path) -> Path:
+            slide_id = html.stem
+            duree_ms = durees.get(slide_id, 4000)
+            clip = sortie_dir / f"{slide_id}.mp4"
+            page = await pages.get()
+            try:
                 # Les images vivent dans un dossier temporaire du système : des
                 # milliers de petits fichiers sur un volume monté seraient lents,
                 # et elles ne servent à rien une fois le clip encodé.
                 with tempfile.TemporaryDirectory(prefix=f"rendu_{slide_id}_") as tmp:
                     nb = await _capturer_slide(page, html, duree_ms, Path(tmp))
-                    _assembler_images(Path(tmp), clip)
+                    await asyncio.to_thread(_assembler_images, Path(tmp), clip)
+            finally:
+                await pages.put(page)
+            logger.info("  %s : %d images (%.1fs)", slide_id, nb, duree_ms / 1000)
+            return clip
 
-                logger.info(
-                    "  %s : %d images (%.1fs)", slide_id, nb, duree_ms / 1000
-                )
-                clips.append(clip)
+        try:
+            return list(await asyncio.gather(*(une_slide(h) for h in html_files)))
         finally:
             await navigateur.close()
 
-    return clips
+
+# Mesure, dans l'état final de chaque slide, ce que l'œil ne verrait qu'après le
+# rendu : un bloc qui déborde dans une bande recouverte par l'interface de
+# TikTok, ou un mot plus large que sa colonne. Seuls les enfants directs de
+# `.slide` sont mesurés : la colonne est un flex vertical, un contenu trop long
+# allonge donc son bloc, qui sort alors de la zone utile.
+_JS_MESURE = """z => {
+  const fautes = [], tol = 2;
+  for (const el of document.querySelectorAll('.slide > *')) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    const nom = String(el.className).split(' ')[0] || el.tagName.toLowerCase();
+    if (r.bottom > z.h - z.bas + tol)
+      fautes.push(`${nom} descend à ${Math.round(r.bottom)} px (limite ${z.h - z.bas})`);
+    if (r.right > z.w - z.droite + tol)
+      fautes.push(`${nom} déborde à droite jusqu'à ${Math.round(r.right)} px`);
+    if (el.scrollWidth > el.clientWidth + tol)
+      fautes.push(`${nom} : un mot dépasse la largeur de la colonne`);
+  }
+  return fautes;
+}"""
+
+
+async def _mesurer(html_files: list[Path]) -> dict[str, list[str]]:
+    """Défauts de mise en page par slide ; les slides saines n'y figurent pas."""
+    from playwright.async_api import async_playwright
+
+    from content.slides import ZONE_SURE_BAS, ZONE_SURE_DROITE
+
+    zones = {"w": LARGEUR, "h": HAUTEUR, "bas": ZONE_SURE_BAS, "droite": ZONE_SURE_DROITE}
+    defauts: dict[str, list[str]] = {}
+    async with async_playwright() as p:
+        navigateur = await p.chromium.launch(args=ARGS_CHROMIUM)
+        try:
+            page = await navigateur.new_page(viewport={"width": LARGEUR, "height": HAUTEUR})
+            for html in html_files:
+                # La page se fige d'elle-même sur son dernier instant au chargement :
+                # c'est l'état le plus chargé, tous les éléments sont apparus.
+                await page.goto(html.resolve().as_uri())
+                await page.evaluate("document.fonts.ready")
+                fautes = await page.evaluate(_JS_MESURE, zones)
+                if fautes:
+                    defauts[html.stem] = fautes
+        finally:
+            await navigateur.close()
+    return defauts
+
+
+def verifier_mise_en_page(script_path: Path) -> None:
+    """
+    Refuse un script dont une slide sortirait de la zone utile.
+
+    À appeler avant la synthèse vocale : le défaut se voit alors en quelques
+    secondes, au lieu de minutes de rendu et d'un appel de quota consommé.
+    La mise en page ne dépend pas des durées : les slides sont générées sans elles.
+
+    Raises:
+        ValueError: Liste des slides fautives et de leurs défauts
+    """
+    from content.slides import generate_html_slides
+
+    defauts = asyncio.run(_mesurer(generate_html_slides(script_path)))
+    if defauts:
+        detail = "\n".join(
+            f"  {slide} : {' ; '.join(fautes)}" for slide, fautes in defauts.items()
+        )
+        raise ValueError(
+            f"Mise en page hors zone utile dans {script_path.name} :\n{detail}\n"
+            f"Raccourcir le texte concerné dans le script JSON, ou le régénérer."
+        )
+    logger.info("Mise en page vérifiée : toutes les slides tiennent dans la zone utile")
 
 
 def rendre_slides(

@@ -618,7 +618,13 @@ def step_tts(script_path: Path, voice: str, tts_provider: "str | None" = None) -
     Returns:
         (audio_final_mp3, segments_dir)
     """
+    from content.render import verifier_mise_en_page
     from media.tts import process_script
+
+    # Avant le premier appel de synthèse : une slide qui déborde de la zone utile
+    # se voit ici en quelques secondes, et non après le quota et le rendu. Placé
+    # dans step_tts, le contrôle couvre le chemin local comme le DAG.
+    verifier_mise_en_page(script_path)
 
     stem = script_path.stem
     segments_dir = AUDIO_DIR / stem / "segments"
