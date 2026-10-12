@@ -523,14 +523,26 @@ def _requete(entree: dict, script: dict, fournisseur: str) -> str:
             script.get("illustration_titre"), script.get("mots_cles_image_titre")
         )
     else:
-        # L'accueil et la conclusion n'ont pas de champ propre : leur requête est
-        # dérivée du titre de la vidéo, avec une nuance distincte. Reprendre tel
-        # quel le prompt du titre donnerait trois fois le même visuel.
-        titre = script.get("titre_video", "") or script.get("titre_original", "")
+        # L'accueil et la conclusion n'ont pas de champ propre : leur requête
+        # dérive de la slide titre, avec une nuance distincte — reprendre tel
+        # quel son prompt donnerait trois fois le même visuel.
         nuance = {
             "intro": "opening atmosphere, wide establishing mood",
             "conclusion": "closing atmosphere, calm resolution",
         }[entree["genre"]]
+        if fournisseur == "cloudflare":
+            # **Jamais le titre de la vidéo vers un modèle génératif.** Une phrase
+            # littérale est un texte à écrire, et « no text » n'y peut rien :
+            # constaté le 11/10/2026, « L'IA ressuscite des secrets d'archives
+            # oubliés » est revenu en lettres déformées au milieu de l'accueil.
+            # La description de la slide titre est déjà abstraite et en anglais ;
+            # sans elle, le dégradé vaut mieux qu'un faux texte.
+            base = (script.get("illustration_titre")
+                    or script.get("mots_cles_image_titre") or "").strip()
+            return f"{base}, {nuance}" if base else ""
+        # Pexels cherche des photographies : le titre y est une requête, pas un
+        # texte à dessiner.
+        titre = script.get("titre_video", "") or script.get("titre_original", "")
         return f"{titre} {nuance}".strip()
 
     if fournisseur == "cloudflare" and (dedie or "").strip():
