@@ -3,8 +3,8 @@ Veille quotidienne : collecte les sources ouvertes et alimente la file de sujets
 
 Ce DAG ne produit **aucune vidéo** — il remplit seulement la table `articles`.
 Produire une vidéo pour chaque article coûterait des appels LLM et générerait du
-remplissage ; le choix des sujets reste une décision (humaine aujourd'hui, assistée
-par un modèle de scoring plus tard).
+remplissage. Les sources en tendance relèvent la popularité de chaque article,
+que `produire_video` classe pour choisir son sujet.
 
 Chaque source est une tâche indépendante : une panne d'Arxiv n'empêche pas la
 collecte de HuggingFace, et chaque source a ses propres tentatives.
@@ -55,23 +55,10 @@ def veille_quotidienne():
         import logging
 
         from scraper.sources import SOURCES
-        from scraper.storage import save_article
+        from scraper.storage import save_item
 
         logger = logging.getLogger(__name__)
-        nouveaux = 0
-
-        for item in SOURCES[source](limit=limite):
-            if save_article(
-                source=item["source"],
-                source_id=item["source_id"],
-                title=item["title"],
-                url=item["url"],
-                summary=item["summary"],
-                published=item.get("published"),
-                tags=item.get("tags"),
-                raw_data=item.get("raw"),
-            ):
-                nouveaux += 1
+        nouveaux = sum(save_item(item) for item in SOURCES[source](limit=limite))
 
         logger.info("%s : %d nouveaux articles", source, nouveaux)
         return {"source": source, "nouveaux": nouveaux}
@@ -88,7 +75,7 @@ def veille_quotidienne():
         for r in sorted(resultats, key=lambda x: -x["nouveaux"]):
             logger.info("  %-20s %d", r["source"], r["nouveaux"])
 
-        en_attente = len(get_articles(status="raw", limit=1000))
+        en_attente = len(get_articles(status="raw", limit=None))
         logger.info("Total : %d nouveaux — %d articles en attente de traitement",
                     total, en_attente)
         return f"{total} nouveaux, {en_attente} en attente"

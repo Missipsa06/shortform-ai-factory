@@ -25,7 +25,9 @@ import logging
 import re
 import sys
 import time
+from bisect import bisect_right
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,47 @@ def _filtrer_par_registre(articles: list, registre: str) -> list:
     return retenus
 
 
+# Au-delà, un relevé de popularité ne dit plus rien du buzz présent. Deux jours
+# et non un : la veille tourne chaque matin, une exécution manquée ne doit pas
+# vider le classement.
+POPULARITE_FENETRE = timedelta(days=2)
+
+
+def _par_popularite(articles: list, maintenant: "datetime | None" = None) -> list:
+    """
+    Classe en tête les articles au buzz mesuré récemment, les autres ensuite.
+
+    Le rang se calcule **au sein de chaque source** (rang centile) : les
+    échelles n'ont rien de commun — un modèle HuggingFace compte ses likes par
+    milliers, un billet de blog ses votes par dizaines — et un classement brut
+    servirait toujours la même source. Le meilleur de chaque source vaut 1.
+
+    Les articles sans relevé récent (sources sans popularité, ou sortis des
+    classements) suivent dans l'ordre reçu, c'est-à-dire du plus récent au plus
+    ancien : le comportement d'avant.
+    """
+    maintenant = maintenant or datetime.now(timezone.utc)
+    frais = [
+        a for a in articles
+        if a.get("popularite") is not None and a.get("popularite_le")
+        and maintenant - a["popularite_le"] <= POPULARITE_FENETRE
+    ]
+    valeurs: dict[str, list[int]] = {}
+    for a in frais:
+        valeurs.setdefault(a["source"], []).append(a["popularite"])
+    for v in valeurs.values():
+        v.sort()
+
+    def centile(a: dict) -> float:
+        v = valeurs[a["source"]]
+        return bisect_right(v, a["popularite"]) / len(v)
+
+    vus = {id(a) for a in frais}
+    # Tri stable : à rang égal, le plus récent passe devant.
+    return (sorted(frais, key=centile, reverse=True)
+            + [a for a in articles if id(a) not in vus])
+
+
 def sujet_depuis_veille(
     source_id: "str | None" = None,
     aleatoire: bool = False,
@@ -150,11 +193,11 @@ def sujet_depuis_veille(
     Sujet tiré des articles collectés par la veille.
 
     Args:
-        source_id: Article précis ; None = choix automatique
-        aleatoire: Tirer au sort au lieu de prendre le plus récent. La fraîcheur
-                   fait remonter les mêmes thèmes tant qu'Arxiv publie sur les
-                   mêmes sujets ; le tirage puise dans tout le corpus en attente
-                   et diversifie la production.
+        source_id: Article précis ; None = le plus populaire de sa source
+                   (voir `_par_popularite`), à défaut le plus récent
+        aleatoire: Tirer au sort au lieu de suivre ce classement ; le tirage
+                   puise dans tout le corpus en attente et diversifie la
+                   production.
         registre:  'technique', 'societe', ou '' pour ne pas filtrer. Ignoré
                    quand `source_id` désigne déjà un article précis.
 
@@ -170,19 +213,17 @@ def sujet_depuis_veille(
 
     if source_id:
         articles = [
-            a for a in get_articles(limit=500) if a["source_id"] == source_id
+            a for a in get_articles(limit=None) if a["source_id"] == source_id
         ]
         if not articles:
             raise RuntimeError(f"Article introuvable en base : {source_id}")
     else:
-        # Du plus récent au plus ancien : sans modèle de scoring des sujets, la
-        # fraîcheur est le seul critère dont on dispose.
-        # Le plafond est relevé quand un registre est demandé : les sources
-        # sociétales sont minoritaires, et les 50 plus récents peuvent n'en
-        # contenir aucune.
-        plafond = 1000 if (aleatoire or registre) else 50
+        # Toute la file et non les 50 plus récents : le classement par
+        # popularité doit voir chaque article en tendance, et une collecte
+        # en rapporte plus de cent d'un coup. Le registre filtre ensuite —
+        # les sources sociétales, minoritaires, seraient sinon absentes.
         articles = _filtrer_par_registre(
-            get_articles(status="raw", limit=plafond), registre
+            get_articles(status="raw", limit=None), registre
         )
         if not articles:
             precision = f" pour le registre « {registre} »" if registre else ""
@@ -197,6 +238,8 @@ def sujet_depuis_veille(
             articles = list(articles)
             random.shuffle(articles)
             logger.info("Tirage au sort parmi %d articles en attente", len(articles))
+        else:
+            articles = _par_popularite(articles)
 
     for article in articles:
         resume = (article.get("summary") or "").strip()
@@ -207,7 +250,8 @@ def sujet_depuis_veille(
             )
             continue
         logger.info("Sujet retenu depuis la veille : %s", article["title"][:70])
-        logger.info("  source=%s  id=%s", article["source"], article["source_id"])
+        logger.info("  source=%s  id=%s  popularité=%s", article["source"],
+                    article["source_id"], article.get("popularite"))
         return Sujet(
             titre=article["title"],
             resume=resume,
@@ -294,6 +338,20 @@ def _pertinence(article: dict, termes: list[str]) -> tuple[int, int]:
 POIDS_LEXICAL = 0.5
 POIDS_SEMANTIQUE = 0.5
 
+# Similarité cosinus *brute* en deçà de laquelle un article ne sert pas de source.
+#
+# Le score hybride ne peut pas porter ce seuil : normalisé par le maximum, il
+# donne 0,5 au meilleur candidat quel qu'il soit — « la cuisine italienne »
+# retenait ainsi quatre articles d'IA avec le même score que « réseaux de
+# neurones ». Mesuré le 18/10/2026 sur 648 articles en attente : trois thèmes
+# hors corpus (cuisine, football, jardinage) plafonnent à 0,247, les articles
+# pertinents commencent vers 0,29 (les GGUF pour « llama.cpp », un article
+# médical pour « la médecine »). Le lexical ne repêche pas sous ce seuil : ses
+# correspondances complètes y sont des faux positifs (« Gemini 4 Argon » à 0,16
+# pour « la finance »). Propre au modèle mesuré, paraphrase-multilingual-MiniLM-
+# L12-v2 : changer d'`EMBEDDING_MODEL` impose de remesurer.
+SEUIL_SEMANTIQUE = 0.30
+
 
 def _scores_semantiques(topic: str, candidats: list[dict]) -> "dict[str, float]":
     """
@@ -373,7 +431,7 @@ def sujet_multi_sources(topic: str, nb_sources: int = 4, registre: str = "") -> 
 
     candidats = [
         a for a in _filtrer_par_registre(
-            get_articles(status="raw", limit=1000), registre
+            get_articles(status="raw", limit=None), registre
         )
         if len((a.get("summary") or "").strip()) >= RESUME_MINIMUM
     ]
@@ -395,20 +453,41 @@ def sujet_multi_sources(topic: str, nb_sources: int = 4, registre: str = "") -> 
         lexical = distincts / len(termes)
         proximite = semantique.get(article["source_id"], 0.0)
         score = POIDS_LEXICAL * lexical + POIDS_SEMANTIQUE * (proximite / plafond)
-        # Un article que ni les mots-clés ni le sens ne rapprochent du thème est
-        # écarté : mieux vaut trois sources justes que quatre dont une hors sujet.
-        if distincts or proximite > 0:
+        # Mieux vaut trois sources justes que quatre dont une hors sujet. Quand
+        # l'article a un vecteur, le sens seul décide de l'admission (voir
+        # SEUIL_SEMANTIQUE) ; sans vecteur, le lexical reste seul juge.
+        if article["source_id"] in semantique:
+            admis = proximite >= SEUIL_SEMANTIQUE
+        else:
+            admis = distincts > 0
+        if admis:
             classement.append((score, lexical, proximite, occurrences, article))
 
     classement.sort(key=lambda x: x[0], reverse=True)
-    retenus = classement[:nb_sources]
+
+    # Un même papier arrive sous deux identifiants — « 2610.22341 » par les
+    # Daily Papers, « 2610.22341v1 » par l'API arXiv — et occupait alors deux
+    # des places. Le titre les réunit ; le mieux classé reste.
+    retenus, vus = [], set()
+    for ligne in classement:
+        titre = ligne[-1]["title"].strip().lower()
+        if titre not in vus:
+            vus.add(titre)
+            retenus.append(ligne)
+        if len(retenus) == nb_sources:
+            break
 
     if not retenus:
         raise RuntimeError(
-            f"Aucun des {len(candidats)} articles ne correspond à « {topic} ». "
-            f"Termes cherchés : {', '.join(termes)}. Essaie un terme technique "
-            f"anglais (attention, diffusion, embedding), ou produis sans source "
-            f"avec --topic seul."
+            f"Aucun des {len(candidats)} articles ne correspond à « {topic} » "
+            f"(similarité < {SEUIL_SEMANTIQUE}). Termes cherchés : "
+            f"{', '.join(termes)}. Essaie un terme technique anglais (attention, "
+            f"diffusion, embedding), ou produis sans source avec --topic seul."
+        )
+    if len(retenus) < nb_sources:
+        logger.warning(
+            "Seulement %d article(s) sur %d demandés assez proches de « %s » : "
+            "le corpus couvre peu ce thème.", len(retenus), nb_sources, topic,
         )
 
     mode = "hybride" if semantique else "lexical"

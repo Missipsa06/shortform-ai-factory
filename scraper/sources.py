@@ -1,7 +1,8 @@
 """
 Configuration et implémentation des scrapers par source.
 
-Techniques   : Arxiv, HuggingFace Blog.
+Techniques   : Arxiv, HuggingFace (blog, modèles et Daily Papers en tendance),
+               Hacker News — les quatre dernières portent une popularité.
 Non techniques : Montreal AI Ethics (CC BY), NIST (domaine public) — voir la
 section « Sources non techniques » pour le critère de licence qui les a
 sélectionnées, et qui en a écarté une vingtaine d'autres.
@@ -86,7 +87,12 @@ def scrape_arxiv(limit: int = 10) -> Iterator[dict]:
 # HuggingFace Blog
 # ---------------------------------------------------------------------------
 
-HF_BLOG_URL = "https://huggingface.co/blog"
+# (adresse, clé de la liste dans la réponse) : les deux API ne nomment pas
+# leur liste pareil. Le blog communautaire est celui du seul succès mesuré.
+HF_API_BLOGS = (
+    ("https://huggingface.co/api/blog", "allBlogs"),
+    ("https://huggingface.co/api/blog/community", "posts"),
+)
 
 # Le corps de l'article, par ordre de préférence. Plusieurs sélecteurs plutôt
 # qu'un seul : si HuggingFace change son gabarit, la source se dégrade au lieu
@@ -182,53 +188,274 @@ def _hf_contenu(url: str) -> "tuple[str, str | None]":
     return "", None
 
 
+def _json(url: str, params: "dict | None" = None) -> "dict | list | None":
+    """Réponse JSON d'une API, None si elle est injoignable ou illisible."""
+    try:
+        reponse = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+        reponse.raise_for_status()
+        return reponse.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.error("API illisible (%s) : %s", url, e)
+        return None
+
+
 def scrape_huggingface(limit: int = 10) -> Iterator[dict]:
     """
-    Scrape les derniers articles du blog HuggingFace, contenu compris.
+    Articles du blog HuggingFace **en tendance**, officiels et communautaires.
+
+    Le classement par date les rendait tous égaux. Or le seul succès mesuré du
+    projet — « Qwen3.8-27B-pi », 140 vues et 9 likes en deux heures — était 5ᵉ
+    du classement « trending » du blog communautaire le jour où il a été
+    relevé. Les votes des sept derniers jours (`upvotes7d`) deviennent la
+    popularité de l'article ; c'est elle que `sujet_depuis_veille` classe.
+
+    Le `source_id` reste le seul slug, comme avant : les articles déjà en base
+    sont reconnus et ne reviennent pas en doublon.
 
     Yields:
-        dict avec les champs : source_id, title, url, summary, published, tags
+        dict : source, source_id, title, url, summary, published, tags, popularite
     """
-    logger.info("Scraping HuggingFace Blog (limit=%d)...", limit)
-    try:
-        resp = requests.get(HF_BLOG_URL, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        logger.error("Erreur HuggingFace Blog : %s", e)
-        return
+    logger.info("Scraping HuggingFace Blog en tendance (limit=%d)...", limit)
+    billets = []
+    for api, cle in HF_API_BLOGS:
+        reponse = _json(api, {"sort": "trending", "limit": limit})
+        billets += (reponse or {}).get(cle, [])
+    billets.sort(key=lambda b: b.get("upvotes7d", 0), reverse=True)
+    logger.info("HuggingFace Blog : %d articles en tendance", len(billets))
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    articles = soup.select("article")[:limit]
-    logger.info("HuggingFace Blog : %d articles trouvés", len(articles))
-
-    for article in articles:
-        link_tag = article.find("a", href=True)
-        if not link_tag:
-            continue
-
-        href = link_tag["href"]
-        url = f"https://huggingface.co{href}" if href.startswith("/") else href
-        slug = href.strip("/").split("/")[-1]
-        title_tag = article.find(["h2", "h3", "h4"])
-        title = title_tag.text.strip() if title_tag else slug
-
+    for billet in billets[:limit]:
+        url = f"https://huggingface.co{billet['url']}"
+        titre = billet["title"]
         summary, publie = _hf_contenu(url)
         if not summary:
             # Sans contenu, l'article ferait inventer le LLM : mieux vaut ne pas
             # l'enregistrer que de polluer la file de sujets.
-            logger.info("Article ignoré, sans contenu : %s", title[:60])
+            logger.info("Article ignoré, sans contenu : %s", titre[:60])
             continue
         time.sleep(HF_DELAI)
 
         yield {
             "source": "huggingface_blog",
-            "source_id": slug,
-            "title": title,
+            "source_id": billet["slug"],
+            "title": titre,
             "url": url,
             "summary": summary,
-            "published": publie,
+            "published": (billet.get("publishedAt") or "")[:10] or publie,
             "tags": ["huggingface", "nlp"],
-            "raw": {"slug": slug, "title": title, "url": url},
+            "popularite": billet.get("upvotes7d", 0),
+            "raw": billet,
+        }
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace — modèles en tendance
+# ---------------------------------------------------------------------------
+
+HF_API_MODELES = "https://huggingface.co/api/models"
+
+# Le haut du classement est régulièrement occupé par des variantes « sans
+# censure » de modèles d'image : relevé le 07/10/2026, une sur six. Hors sujet
+# pour une chaîne de vulgarisation grand public.
+HF_MODELE_EXCLU = re.compile(r"uncensor|abliterat|nsfw|porn|erotic", re.IGNORECASE)
+
+
+def _texte_fiche(markdown: str) -> str:
+    """
+    Texte lisible d'une fiche de modèle (README).
+
+    Retire l'en-tête YAML, les images, le HTML et la syntaxe des liens, dont
+    seul le libellé est gardé : le LLM tronque, chaque caractère de balisage
+    est un caractère de matière en moins.
+    """
+    texte = re.sub(r"\A---.*?\n---\s*\n", "", markdown, flags=re.DOTALL)
+    texte = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", texte)
+    texte = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", texte)
+    texte = re.sub(r"<[^>]+>", " ", texte)
+    return " ".join(html.unescape(texte).split())[:HF_EXTRAIT_MAX]
+
+
+def scrape_hf_modeles(limit: int = 10) -> Iterator[dict]:
+    """
+    Modèles en tendance sur HuggingFace — le genre « nouveauté qui fait le
+    buzz », celui du seul succès mesuré.
+
+    Le contenu est la fiche du modèle, écrite par ses auteurs : chiffres,
+    usages, matériel requis. La licence est celle que déclare le dépôt ; une
+    clause « ND » interdirait l'adaptation en vidéo, le modèle est alors écarté
+    (même critère que pour les flux RSS, voir plus bas).
+
+    Yields:
+        dict : source, source_id, title, url, summary, published, tags,
+        licence, popularite
+    """
+    logger.info("Scraping HuggingFace modèles en tendance (limit=%d)...", limit)
+    # Le double : une part sera écartée par le filtre ou faute de fiche.
+    modeles = _json(HF_API_MODELES, {
+        "sort": "trendingScore", "limit": limit * 2, "cardData": "true",
+    }) or []
+
+    retenus = 0
+    for modele in modeles:
+        if retenus >= limit:
+            break
+        ident = modele["id"]
+        licence = str((modele.get("cardData") or {}).get("license") or "")
+        if (HF_MODELE_EXCLU.search(ident)
+                or "not-for-all-audiences" in modele.get("tags", [])
+                or "-nd" in licence.lower()):
+            logger.info("Modèle écarté : %s", ident)
+            continue
+
+        try:
+            fiche = requests.get(f"https://huggingface.co/{ident}/raw/main/README.md",
+                                 headers=HEADERS, timeout=TIMEOUT)
+            fiche.raise_for_status()
+        except requests.RequestException as e:
+            logger.info("Modèle ignoré, fiche illisible (%s) : %s", ident, e)
+            continue
+        summary = _texte_fiche(fiche.text)
+        if len(summary) < 200:
+            logger.info("Modèle ignoré, fiche trop courte : %s", ident)
+            continue
+        time.sleep(HF_DELAI)
+
+        retenus += 1
+        yield {
+            "source": "huggingface_modeles",
+            "source_id": "hf_" + ident.replace("/", "_"),
+            "title": ident,
+            "url": f"https://huggingface.co/{ident}",
+            "summary": summary,
+            "published": (modele.get("createdAt") or "")[:10] or None,
+            "tags": ["huggingface", "modèle", modele.get("pipeline_tag") or ""],
+            "licence": licence,
+            "popularite": int(modele.get("trendingScore") or 0),
+            "raw": {k: modele.get(k) for k in
+                    ("id", "likes", "trendingScore", "createdAt", "pipeline_tag")},
+        }
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace Daily Papers — arXiv trié par votes
+# ---------------------------------------------------------------------------
+
+HF_API_PAPERS = "https://huggingface.co/api/daily_papers"
+
+
+def scrape_hf_papers(limit: int = 10) -> Iterator[dict]:
+    """
+    Papiers arXiv sélectionnés et votés par la communauté HuggingFace.
+
+    `scrape_arxiv` prend les dernières soumissions, sans aucun signal d'intérêt :
+    sur quelques centaines par jour, rien ne distingue le papier dont on parle
+    de celui que personne ne lira. Les Daily Papers en retiennent quelques
+    dizaines et les font voter.
+
+    Les articles sont enregistrés sous la source **arxiv** et non sous un nom
+    propre : c'est un papier arXiv, avec sa licence, ses figures
+    (`scraper/figures.py` ne connaît qu'`arxiv`) et son identifiant. HuggingFace
+    n'apporte que le vote, qui devient la popularité.
+
+    Yields:
+        dict : source, source_id, title, url, summary, published, tags, popularite
+    """
+    logger.info("Scraping HuggingFace Daily Papers (limit=%d)...", limit)
+    papiers = [p["paper"] for p in (_json(HF_API_PAPERS, {"limit": 100}) or [])]
+    papiers.sort(key=lambda p: p.get("upvotes", 0), reverse=True)
+
+    for papier in papiers[:limit]:
+        yield {
+            "source": "arxiv",
+            "source_id": papier["id"],
+            "title": " ".join(papier["title"].split()),
+            "url": f"https://arxiv.org/abs/{papier['id']}",
+            "summary": " ".join((papier.get("summary") or "").split()),
+            "published": (papier.get("publishedAt") or "")[:10] or None,
+            "tags": ["arxiv", "hf-daily-papers"],
+            "popularite": papier.get("upvotes", 0),
+            "raw": {k: papier.get(k) for k in ("id", "title", "upvotes", "publishedAt")},
+        }
+
+
+# ---------------------------------------------------------------------------
+# Hacker News — discussions IA les plus votées de la semaine
+# ---------------------------------------------------------------------------
+
+HN_API = "https://hn.algolia.com/api/v1/search"
+HN_POINTS_MIN = 100
+HN_FENETRE = 7 * 86400  # secondes
+
+# Hacker News couvre toute la tech : sur une semaine de discussions à plus de
+# 200 points, une recherche « LLM » remontait aussi des pilotes de F1 et des
+# lampes. Plus étroit que `NIST_MOTIF_IA` : « algorithm » y est du vocabulaire
+# courant, et le motif nomme les modèles, qui font les titres ici.
+HN_MOTIF_IA = re.compile(
+    r"\b(AI|LLMs?|GPT[\w.-]*|Claude|Gemini|Qwen[\w.-]*|Llama[\w.-]*|Mistral|"
+    r"DeepSeek|Anthropic|OpenAI|open[- ]weights?|machine learning|neural|"
+    r"transformers?|diffusion|fine[- ]tun\w*|inference)\b",
+    re.IGNORECASE,
+)
+HN_SELECTEURS = ("article", "main", "div.markdown-body", "body")
+
+
+def scrape_hacker_news(limit: int = 10) -> Iterator[dict]:
+    """
+    Sujets IA les plus discutés de la semaine sur Hacker News.
+
+    C'est le plus fort signal de buzz relevé : sorties de modèles et astuces
+    (« faire tourner un modèle de 125 milliards de paramètres sur une RTX 4090 »)
+    y dépassent les 900 points. Les points deviennent la popularité.
+
+    Le contenu est la page liée, suivie comme pour les flux RSS. **Sa licence
+    est inconnue** — Hacker News ne fait que pointer vers des sites tiers, dont
+    les grands titres tous droits réservés que ce module écarte ailleurs. Elle
+    reste donc vide, comme pour le blog HuggingFace : la vérification se fait à
+    la validation humaine, avant publication. Une discussion sans lien (« Ask
+    HN ») apporte son propre texte.
+
+    Yields:
+        dict : source, source_id, title, url, summary, published, tags, popularite
+    """
+    logger.info("Scraping Hacker News (limit=%d)...", limit)
+    depuis = int(time.time()) - HN_FENETRE
+    reponse = _json(HN_API, {
+        "tags": "story", "hitsPerPage": 300,
+        "numericFilters": f"points>={HN_POINTS_MIN},created_at_i>{depuis}",
+    }) or {}
+    discussions = [h for h in reponse.get("hits", [])
+                   if HN_MOTIF_IA.search(h.get("title") or "")]
+    discussions.sort(key=lambda h: h.get("points", 0), reverse=True)
+    logger.info("Hacker News : %d discussions IA à %d points ou plus",
+                len(discussions), HN_POINTS_MIN)
+
+    retenus = 0
+    for hit in discussions:
+        if retenus >= limit:
+            break
+        fil = f"https://news.ycombinator.com/item?id={hit['objectID']}"
+        lien = hit.get("url")
+        if lien:
+            corps = _corps_distant(lien, HN_SELECTEURS)
+            time.sleep(RSS_DELAI)
+        else:
+            corps = " ".join(html.unescape(
+                re.sub(r"<[^>]+>", " ", hit.get("story_text") or "")).split())
+        if len(corps) < 200:
+            logger.info("Discussion ignorée, sans contenu : %s", hit["title"][:60])
+            continue
+
+        retenus += 1
+        yield {
+            "source": "hacker_news",
+            "source_id": f"hn_{hit['objectID']}",
+            "title": hit["title"],
+            "url": lien or fil,
+            "summary": corps[:HF_EXTRAIT_MAX],
+            "published": (hit.get("created_at") or "")[:10] or None,
+            "tags": ["hacker-news"],
+            "popularite": hit.get("points", 0),
+            "raw": {"fil": fil, **{k: hit.get(k) for k in
+                                   ("objectID", "title", "url", "points", "num_comments")}},
         }
 
 
@@ -291,6 +518,13 @@ def _corps_distant(url: str, selecteurs: tuple[str, ...]) -> str:
         reponse.raise_for_status()
     except requests.RequestException as e:
         logger.warning("Page illisible (%s) : %s", url, e)
+        return ""
+    # Hacker News pointe aussi vers des PDF et des vidéos : parsé comme du
+    # HTML, un PDF donne des milliers de caractères de bruit qui passent le
+    # seuil de longueur et partiraient au LLM comme un résumé.
+    if "html" not in reponse.headers.get("Content-Type", "text/html"):
+        logger.info("Page ignorée, pas du HTML (%s) : %s",
+                    reponse.headers.get("Content-Type"), url)
         return ""
 
     soup = BeautifulSoup(reponse.text, "html.parser")
@@ -443,7 +677,10 @@ def scrape_nist(limit: int = 10) -> Iterator[dict]:
 
 SOURCES: dict[str, callable] = {
     "arxiv": scrape_arxiv,
+    "hf_papers": scrape_hf_papers,          # enregistre sous « arxiv »
     "huggingface_blog": scrape_huggingface,
+    "huggingface_modeles": scrape_hf_modeles,
+    "hacker_news": scrape_hacker_news,
     "montreal_ai_ethics": scrape_montreal_ai_ethics,
     "nist": scrape_nist,
 }
@@ -479,6 +716,8 @@ NATURES = ("technique", "critique", "institution")
 PROFILS: dict[str, Profil] = {
     "arxiv": Profil("arXiv", "📄", "technique"),
     "huggingface_blog": Profil("HuggingFace Blog", "🤗", "technique"),
+    "huggingface_modeles": Profil("HuggingFace Modèles", "🔥", "technique"),
+    "hacker_news": Profil("Hacker News", "🗞️", "technique"),
     "montreal_ai_ethics": Profil("Montreal AI Ethics", "⚖️", "critique",
                                  MONTREAL_LICENCE),
     "nist": Profil("NIST", "🏛️", "institution", NIST_LICENCE),
@@ -507,7 +746,7 @@ FAMILLES: dict[str, str] = {
 
 # Libellés, pour que l'interface et la ligne de commande nomment la même chose.
 LIBELLES_FAMILLE: dict[str, str] = {
-    "technique": "arXiv + HuggingFace",
+    "technique": "arXiv + HuggingFace + Hacker News",
     "societe": "Montreal AI Ethics + NIST",
 }
 

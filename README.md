@@ -126,7 +126,7 @@ Institute (CC BY 4.0) et NIST (domaine public).
 
 | Étape | Module | Ce qui se passe |
 |---|---|---|
-| Veille | `scraper/` | Arxiv, HuggingFace Blog, Montreal AI Ethics Institute et NIST → Postgres, déduplication par `source_id`, puis vectorisation des nouveaux articles. |
+| Veille | `scraper/` | Arxiv, HuggingFace (blog, modèles et Daily Papers en tendance), Hacker News, Montreal AI Ethics Institute et NIST → Postgres, déduplication par `source_id`, popularité relevée sur la source, puis vectorisation des nouveaux articles. |
 | Sélection | `automation/workflow.py` | Score hybride lexical + sémantique, partition par statut, articles marqués consommés. |
 | Figures source | `scraper/figures.py` | Relève les figures publiées dans l'article (arXiv HTML, blog HuggingFace), avec légende et crédit. Le LLM peut en choisir une par indice. |
 | Script | `content/llm.py` + `providers.py` | Reformulation grand public en JSON structuré (hook, introduction, slides, conclusion, hashtags). Tout fait cité doit se retrouver dans la source. |

@@ -187,6 +187,18 @@ def init_db() -> None:
         conn.execute(
             "ALTER TABLE articles ADD COLUMN IF NOT EXISTS embedding_modele TEXT"
         )
+        # Popularité relevée sur la source (votes, points, score de tendance)
+        # et date du relevé. Les échelles diffèrent d'une source à l'autre —
+        # des milliers de likes contre une dizaine de votes — et ne se comparent
+        # donc qu'au sein d'une même source. La date sert à ne pas servir un
+        # buzz éteint : un article sorti des classements garde son ancien
+        # score, mais plus un relevé récent.
+        conn.execute(
+            "ALTER TABLE articles ADD COLUMN IF NOT EXISTS popularite INTEGER"
+        )
+        conn.execute(
+            "ALTER TABLE articles ADD COLUMN IF NOT EXISTS popularite_le TIMESTAMPTZ"
+        )
         conn.commit()
 
     _schema_pret = True
@@ -205,9 +217,14 @@ def save_article(
     tags: Optional[list[str]] = None,
     raw_data: Optional[dict] = None,
     licence: str = "",
+    popularite: Optional[int] = None,
 ) -> bool:
     """
     Enregistre un article et sauvegarde ses données brutes en JSON.
+
+    La popularité, elle, est **rafraîchie à chaque collecte**, article connu ou
+    non : un sujet qui reste en tendance doit le rester en base, et c'est le
+    relevé du jour qui compte, pas celui de sa première apparition.
 
     Un article déjà connu **dont le résumé est vide** voit celui-ci complété si
     la collecte en rapporte un. Sans cela, corriger un scraper ne répare que les
@@ -239,6 +256,12 @@ def save_article(
             (source, source_id, title, url, published, summary,
              json.dumps(tags or [], ensure_ascii=False), licence),
         ).fetchone()
+        if popularite is not None:
+            conn.execute(
+                "UPDATE articles SET popularite = %s, popularite_le = now() "
+                "WHERE source_id = %s",
+                (popularite, source_id),
+            )
         conn.commit()
 
     # `xmax = 0` distingue une insertion d'une mise à jour : sans ce test, un
@@ -262,12 +285,42 @@ def save_article(
     return True
 
 
+def save_item(item: dict) -> bool:
+    """
+    Enregistre un article tel que le rend un scraper de `scraper.sources`.
+
+    Le seul endroit qui traduit ce dict en colonnes. Le DAG de veille recopiait
+    l'appel à `save_article` du pipeline local et en avait oublié la licence :
+    tout article collecté par Airflow perdait la sienne, en silence.
+    """
+    return save_article(
+        source=item["source"],
+        source_id=item["source_id"],
+        title=item["title"],
+        url=item["url"],
+        summary=item["summary"],
+        published=item.get("published"),
+        tags=item.get("tags"),
+        raw_data=item.get("raw"),
+        # Vide pour les sources qui n'en déclarent pas : elles restent
+        # explicitement sans licence connue plutôt que faussement libres.
+        licence=item.get("licence", ""),
+        popularite=item.get("popularite"),
+    )
+
+
 def get_articles(
     source: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 50,
+    limit: Optional[int] = 50,
 ) -> list[dict]:
-    """Récupère les articles filtrés par source et/ou statut, du plus récent au plus ancien."""
+    """
+    Récupère les articles filtrés par source et/ou statut, du plus récent au plus ancien.
+
+    `limit=None` rend tout. Les appelants qui voulaient « tout » passaient un
+    plafond arbitraire (500, 1000, 5000) que le corpus finit par dépasser : les
+    articles les plus anciens disparaissaient alors sans le moindre message.
+    """
     requete = "SELECT * FROM articles WHERE TRUE"
     params: list = []
 
@@ -278,8 +331,10 @@ def get_articles(
         requete += " AND status = %s"
         params.append(status)
 
-    requete += " ORDER BY created_at DESC LIMIT %s"
-    params.append(limit)
+    requete += " ORDER BY created_at DESC"
+    if limit is not None:
+        requete += " LIMIT %s"
+        params.append(limit)
 
     with connect() as conn:
         return conn.execute(requete, params).fetchall()

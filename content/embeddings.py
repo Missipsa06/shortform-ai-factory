@@ -164,7 +164,7 @@ def main() -> None:
 
     if args.indexer:
         articles = [
-            a for a in get_articles(limit=5000)
+            a for a in get_articles(limit=None)
             if len((a.get("summary") or "").strip()) >= 200
         ]
         deja = set() if args.tout else set(charger_vecteurs(modele))
@@ -191,7 +191,7 @@ def main() -> None:
     q = vectoriser([args.requete])[0]
     scores = similarites(q, corpus)
 
-    titres = {a["source_id"]: a["title"] for a in get_articles(limit=5000)}
+    titres = {a["source_id"]: a["title"] for a in get_articles(limit=None)}
     for rang in np.argsort(-scores)[: args.limite]:
         print(f"  {scores[rang]:.3f}  {titres.get(ids[rang], ids[rang])[:70]}")
 

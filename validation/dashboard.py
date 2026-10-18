@@ -103,7 +103,7 @@ def _articles_en_attente() -> list[tuple[str, str, str]]:
 
     return [
         (a["source_id"], a["title"], a.get("source") or "")
-        for a in get_articles(status="raw", limit=500)
+        for a in get_articles(status="raw", limit=None)
         if len((a.get("summary") or "").strip()) >= RESUME_MINIMUM
     ]
 

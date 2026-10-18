@@ -12,7 +12,7 @@ import sys
 from typing import Optional
 
 from scraper.sources import SOURCES
-from scraper.storage import get_articles, save_article
+from scraper.storage import get_articles, save_item
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +44,7 @@ def _indexer_nouveaux() -> None:
         modele = nom_modele()
         deja = set(charger_vecteurs(modele))
         restants = [
-            a for a in get_articles(limit=5000)
+            a for a in get_articles(limit=None)
             if a["source_id"] not in deja
             and len((a.get("summary") or "").strip()) >= 200
         ]
@@ -69,7 +69,7 @@ def run_pipeline(source: str = "all", limit: int = 20) -> dict[str, int]:
     Lance le pipeline de scraping pour une ou toutes les sources.
 
     Args:
-        source: Nom de la source ('all', 'arxiv', 'huggingface_blog', 'montreal_ai_ethics', 'nist')
+        source: Nom de la source ('all' ou une clé de SOURCES)
         limit:  Nombre maximum d'articles par source
 
     Returns:
@@ -90,21 +90,7 @@ def run_pipeline(source: str = "all", limit: int = 20) -> dict[str, int]:
 
         try:
             for item in scraper_fn(limit=limit):
-                saved = save_article(
-                    source=item["source"],
-                    source_id=item["source_id"],
-                    title=item["title"],
-                    url=item["url"],
-                    summary=item["summary"],
-                    published=item.get("published"),
-                    tags=item.get("tags"),
-                    raw_data=item.get("raw"),
-                    # Vide pour les sources historiques, qui n'en déclarent
-                    # pas : elles restent explicitement sans licence connue
-                    # plutôt que faussement libres.
-                    licence=item.get("licence", ""),
-                )
-                if saved:
+                if save_item(item):
                     new_count += 1
         except Exception as e:
             logger.error("Erreur inattendue sur %s : %s", src_name, e, exc_info=True)
