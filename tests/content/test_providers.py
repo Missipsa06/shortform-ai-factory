@@ -208,3 +208,19 @@ def test_surcharge_env_ignore_les_secours(monkeypatch):
     prov = PROVIDERS["nvidia"]
     monkeypatch.setenv(prov.model_env, "nvidia/un-modele-precis")
     assert modeles_candidats(prov) == ["nvidia/un-modele-precis"]
+
+
+# ── Client ──────────────────────────────────────────────────────────────────
+
+def test_le_client_borne_son_attente_et_ne_reessaie_pas(monkeypatch):
+    """
+    Régression : sans délai, le SDK attend 600 s et réessaie deux fois. Gemini
+    a gardé une requête dix minutes pile, deux fois de suite, et la vidéo a été
+    interrompue avant tout repli. Les réessais appartiennent à content/quota.py.
+    """
+    from content.providers import LLM_DELAI, client_openai
+
+    monkeypatch.setenv("GEMINI_API_KEY", "factice")
+    client = client_openai(PROVIDERS["gemini"])
+    assert client.timeout == LLM_DELAI < 600
+    assert client.max_retries == 0

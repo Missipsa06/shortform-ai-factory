@@ -39,8 +39,7 @@ from content.mcp_client import ErreurMCP, ServeurMCP
 from content.quota import depuis_exception
 from content.providers import (
     Provider,
-    _api_key,
-    resolve_base_url,
+    client_openai,
     resolve_model,
     resolve_provider,
 )
@@ -137,9 +136,7 @@ def _boucle(
     JSON et empêche donc le modèle d'émettre des appels d'outils. La rédaction
     finale, elle, garde le mode JSON — c'est `content/llm.py` qui s'en charge.
     """
-    from openai import OpenAI
-
-    client = OpenAI(api_key=_api_key(prov), base_url=resolve_base_url(prov))
+    client = client_openai(prov)
 
     def completion(**extra):
         """

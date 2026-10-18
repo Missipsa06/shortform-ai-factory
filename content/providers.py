@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 # 2048 tokens, et les modèles gratuits sont souvent plus verbeux.
 MAX_TOKENS = 4096
 
+# Attente maximale d'une réponse, en secondes. Sans elle, le SDK OpenAI attend
+# 600 s et réessaie deux fois : observé le 07/10/2026, Gemini a gardé une
+# requête dix minutes pile sans répondre, deux fois de suite, et la vidéo a été
+# interrompue avant que le repli ne s'enclenche. Un script de 4 096 jetons à
+# 30 jetons/s tient en 140 s ; au-delà, mieux vaut le fournisseur suivant.
+# ponytail: une seule valeur pour tous, à régler par fournisseur si l'un d'eux
+# s'avère structurellement plus lent (nemotron et son raisonnement).
+LLM_DELAI = 180.0
+
 DEFAULT_PROVIDER = "mistral"
 
 # Le repli est actif par défaut : sur un script, l'écart de qualité entre
@@ -458,8 +467,6 @@ def _call_openai_compatible(
     Le mode JSON natif est activé : le modèle ne peut pas encadrer sa réponse de
     texte parasite, ce qui fiabilise le parsing.
     """
-    from openai import OpenAI
-
     extra: dict = {}
     if prov.name in ("openrouter", "nvidia"):
         # Les 18 modèles gratuits d'OpenRouter sont tous des modèles à
@@ -475,7 +482,7 @@ def _call_openai_compatible(
         # raisonnement en anglais avant le JSON demandé.
         extra["reasoning"] = {"exclude": True}
 
-    client = OpenAI(api_key=_api_key(prov), base_url=resolve_base_url(prov))
+    client = client_openai(prov)
     completion = client.chat.completions.create(
         model=modele,
         max_tokens=max_tokens,
@@ -505,6 +512,23 @@ def _call_openai_compatible(
         )
 
     return choice.message.content or ""
+
+
+def client_openai(prov: Provider) -> "OpenAI":
+    """
+    Client du fournisseur, avec une attente bornée et **sans réessai interne**.
+
+    Les réessais du SDK ignorent la nature de l'échec : sur un 429 de Mistral,
+    ils renvoyaient trois requêtes en deux secondes à chaque tentative, alors
+    que `content/quota.py` existe précisément pour décider s'il faut attendre,
+    réessayer ou changer de fournisseur. La politique de réessai lui appartient
+    seule. Une attente expirée remonte sans statut HTTP, donc « autre » et non
+    réessayable : `call_llm` passe directement au candidat suivant.
+    """
+    from openai import OpenAI
+
+    return OpenAI(api_key=_api_key(prov), base_url=resolve_base_url(prov),
+                  timeout=LLM_DELAI, max_retries=0)
 
 
 # ── Point d'entrée ────────────────────────────────────────────────────────────
