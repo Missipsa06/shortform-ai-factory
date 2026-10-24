@@ -102,10 +102,20 @@ Le premier mode combine deux signaux pour classer les articles : les **mots-clé
 et la **proximité sémantique**. Le second permet à une requête française de
 trouver des documents anglais, ce dont la recherche littérale est incapable.
 
-**Donner de la matière au sujet libre (expérimental).** `content/agent.py` confie
-à un modèle outillé (MCP, serveur `mcp-server-fetch`) la collecte de vraies
-sources et rend une note de synthèse qui remplace le résumé fabriqué. Il n'est
-pas encore branché dans le pipeline et s'appelle à la main :
+**Le script est produit par un graphe LangGraph** (`automation/graphe_script.py`) :
+matière → rédaction → vérification des faits → vérification de la mise en page,
+chaque contrôle renvoyant au modèle ce qu'il refuse (2 corrections au plus). Un
+sujet libre y cherche d'abord sa matière dans le corpus (2 articles au moins),
+puis auprès de l'agent MCP, et ne garde le résumé fabriqué qu'en dernier recours.
+
+```bash
+uv run python -m automation.graphe_script --mermaid   # diagramme du graphe
+```
+
+**L'agent MCP seul.** `content/agent.py` confie à un modèle outillé (serveur
+`mcp-server-fetch`) la collecte de vraies sources et rend une note de synthèse.
+Le graphe l'appelle quand le corpus ne couvre pas le thème ; il s'essaie aussi à
+la main :
 
 ```bash
 uv run python -m content.agent --topic "les modèles de diffusion"
@@ -131,7 +141,7 @@ Institute (CC BY 4.0) et NIST (domaine public).
 | Figures source | `scraper/figures.py` | Relève les figures publiées dans l'article (arXiv HTML, blog HuggingFace), avec légende et crédit. Le LLM peut en choisir une par indice. |
 | Script | `content/llm.py` + `providers.py` | Reformulation grand public en JSON structuré (hook, introduction, slides, conclusion, hashtags). Tout fait cité doit se retrouver dans la source. |
 | Illustrations | `content/images.py` | Photos Pexels ou images générées (Cloudflare Workers AI), sur chaque slide de contenu. `IMAGE_SLIDES_SCHEMA=0` en prive celles qui portent un schéma. |
-| Voix | `media/tts.py` | Gemini TTS, NVIDIA Magpie ou edge-tts. Passe **avant** l'image : elle en donne la durée. Les segments sont synthétisés **par lots** pour ménager les quotas, puis redécoupés par slide. |
+| Voix | `media/tts.py` | Gemini TTS, NVIDIA Magpie, ou Qwen3-TTS en local par Wan2GP (`media/wan2gp.py`, voix Charon clonée). Passe **avant** l'image : elle en donne la durée. Les moteurs hébergés synthétisent **par lots** pour ménager les quotas, puis redécoupent par slide ; Qwen3 produit un fichier par segment. |
 | Datation | `media/align.py` | Horodate chaque mot du texte connu, pour le karaoké. |
 | Schémas | `content/slides.py` | Onze figures générées, la figure d'article et 32 pictogrammes, construits au rythme de la narration (voir plus bas). |
 | Rendu | `content/slides.py` + `render.py` | Slides HTML/SVG animées + surlignage mot à mot, capturées image par image via Playwright → un clip MP4 par slide. Polices embarquées pour un rendu identique en local et en conteneur. |
@@ -150,7 +160,7 @@ d'environnement choisit le moteur, une option de ligne de commande le surcharge.
 | Rôle | Variable | Valeurs | Défaut |
 |---|---|---|---|
 | Script | `LLM_PROVIDER` | `gemini`, `mistral`, `openrouter`, `nvidia`, `kimi` | `mistral` |
-| Voix | `TTS_PROVIDER` | `gemini` (Charon), `nvidia` (Louise, Pascal), `edge` | `gemini` |
+| Voix | `TTS_PROVIDER` | `gemini` (Charon), `qwen3` (Charon clonée, local), `nvidia` (Louise, Pascal) | `gemini` |
 | Illustrations | `IMAGE_PROVIDER` | `pexels`, `cloudflare` | `pexels` |
 | Vecteurs | `EMBEDDING_MODEL` | tout modèle fastembed (local) | MiniLM multilingue |
 

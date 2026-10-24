@@ -15,7 +15,7 @@ slide, et donc la synchronisation.
 
 Usage :
     python automation/workflow.py --topic "les transformers"
-    python automation/workflow.py --topic "BERT" --voice remy --whisper-model small
+    python automation/workflow.py --topic "BERT" --tts-provider qwen3 --whisper-model small
     python automation/workflow.py --topic "GANs" --skip-subtitles
 """
 
@@ -563,27 +563,18 @@ def step_llm(sujet: "Sujet | str", provider: str | None = None) -> Path:
     Returns:
         Chemin du fichier JSON généré
     """
-    from content.llm import reformulate_article, save_script
+    from automation.graphe_script import produire_script
+    from content.llm import save_script
 
     if isinstance(sujet, str):
         sujet = sujet_libre(sujet)
 
-    # Les figures de l'article sont relevées **avant** la rédaction : le modèle
-    # les choisit par indice, sur la seule foi de leurs légendes. Seules les
-    # métadonnées circulent ici, le téléchargement a lieu à l'étape des images.
-    from scraper.figures import figures_de
-
+    # Matière, rédaction, vérification des faits et de la mise en page, avec
+    # leurs boucles de correction : voir automation/graphe_script.py. Le sujet
+    # revient du graphe, qui peut l'avoir documenté — un sujet libre couvert par
+    # le corpus devient multi-sources, avec ses articles et son propre stem.
+    script, sujet = produire_script(sujet, provider)
     provenance = sujet.provenance_figures()
-    figures = figures_de(*provenance)
-
-    script = reformulate_article(
-        title=sujet.titre,
-        summary=sujet.resume,
-        source_id=sujet.source_id,
-        source=sujet.source,
-        provider=provider,
-        figures=figures,
-    )
     # Consignée dans le script : l'étape des images relève les figures une
     # seconde fois, pour rester exécutable seule après une reprise par
     # `make render`. Sans elle, un billet de blog serait introuvable — et en
@@ -692,7 +683,7 @@ def step_tts(script_path: Path, voice: str, tts_provider: "str | None" = None) -
     Étape 4 : synthèse vocale.
 
     Args:
-        tts_provider: Moteur TTS (edge, gemini, nvidia) ; None = TTS_PROVIDER dans .env
+        tts_provider: Moteur TTS (gemini, qwen3, nvidia) ; None = TTS_PROVIDER dans .env
 
     Returns:
         (audio_final_mp3, segments_dir)
@@ -761,13 +752,13 @@ def run_pipeline(
 
     Args:
         topic:          Sujet libre (ex: "les transformers") ; ignoré si `sujet`
-        voice:          Voix du moteur TTS retenu (edge : vivienne, remy, denise,
-                        henri ; gemini : nom de voix, ex. Charon ; nvidia : Louise,
-                        Pascal), ou nom complet
+        voice:          Voix du moteur TTS retenu (gemini : nom de voix, ex. Charon ;
+                        qwen3 : voix de media/assets/voix/, ex. charon ; nvidia :
+                        Louise, Pascal)
         whisper_model:  Modèle Whisper (tiny, base, small, medium)
         skip_subtitles: Sauter l'étape transcription/burn
         provider:       Fournisseur LLM ; None = LLM_PROVIDER dans .env puis défaut
-        tts_provider:   Moteur TTS (edge, gemini, nvidia) ; None = TTS_PROVIDER
+        tts_provider:   Moteur TTS (gemini, qwen3, nvidia) ; None = TTS_PROVIDER
                         dans .env puis défaut
         sujet:          Sujet déjà résolu — chemin normal depuis la veille
 
@@ -931,8 +922,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--voice", default="",
-        help="Voix du moteur TTS retenu (edge : vivienne/remy/denise/henri ; "
-             "gemini : ex. Charon ; nvidia : Louise/Pascal)",
+        help="Voix du moteur TTS retenu (gemini : ex. Charon ; qwen3 : charon ; "
+             "nvidia : Louise/Pascal)",
     )
     parser.add_argument(
         "--tts-provider", choices=sorted(TTS_FOURNISSEURS),

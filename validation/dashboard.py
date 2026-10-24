@@ -271,8 +271,8 @@ def onglet_generation() -> None:
 
     st.divider()
 
-    # media.tts importe edge_tts et le client gRPC nvidia : chargé ici plutôt
-    # qu'en tête de fichier, pour ne pas alourdir chaque page du dashboard.
+    # media.tts importe requests, Wan2GP et le client gRPC nvidia à la demande :
+    # chargé ici plutôt qu'en tête de fichier, pour ne pas alourdir chaque page.
     from media.tts import voix_disponibles
 
     col1, col2, col3 = st.columns(3)

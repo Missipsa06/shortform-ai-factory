@@ -47,7 +47,7 @@ LLM_PROVIDER=mistral        # mistral | gemini | openrouter | nvidia | kimi
 MISTRAL_API_KEY=...         # tier gratuit
 GEMINI_API_KEY=...          # sert aussi à la synthèse vocale
 
-TTS_PROVIDER=gemini         # gemini | nvidia | edge
+TTS_PROVIDER=gemini         # gemini | qwen3 | nvidia
 GEMINI_TTS_VOICE=Charon
 NVIDIA_API_KEY=...          # LLM et/ou voix NVIDIA (build.nvidia.com)
 NVIDIA_TTS_VOICE=Louise     # Louise | Pascal
@@ -166,9 +166,10 @@ make all TOPIC="les réseaux de neurones convolutifs" PROVIDER=mistral
 > infinies » annonçant comme futur ce qui existe déjà. Changer de fournisseur ne
 > corrige pas ce défaut : la matière le corrige.
 
-Pour donner de la matière à un sujet libre, l'agent outillé (MCP) va chercher de
-vraies sources et rend une note de synthèse. Il n'est **pas branché** dans le
-pipeline — à essayer à la main, et à comparer avec le script produit sans lui :
+Un sujet libre cherche désormais sa matière lui-même (graphe de
+`automation/graphe_script.py`) : le corpus d'abord, puis l'agent outillé (MCP),
+le résumé fabriqué en dernier recours. Le champ `matiere_origine` du script dit
+lequel a servi. L'agent s'essaie aussi seul :
 
 ```bash
 uv run python -m content.agent --topic "les modèles de diffusion"
@@ -312,7 +313,8 @@ make dag-test    # vérifie que les DAGs s'importent (tourne dans l'image)
 moteur a ses bornes (`LOTISSEMENTS` dans `media/tts.py`). Gemini accepte au plus
 3 segments et 700 caractères par lot, soit **environ 5 appels par vidéo** —
 compter **deux vidéos par jour** sur le palier gratuit. NVIDIA passe en 2 lots
-environ, edge-tts fait un appel par segment et n'a pas de quota.
+environ. Qwen3, local, n'a pas de quota : un lancement de Wan2GP par vidéo,
+environ 3 minutes pour 9 segments sur une RTX 4060 Laptop.
 
 Un lot refusé par le serveur est rejoué seul en deux moitiés, sans changer de
 moteur : rien à faire. Les bornes de Gemini TTS, modèle en préversion, peuvent
@@ -329,7 +331,7 @@ travail sur le visuel :
 
 ```bash
 # .env
-TTS_FALLBACK=1     # bascule sur edge-tts si le quota Gemini est épuisé
+TTS_FALLBACK=1     # bascule sur qwen3 (voix Charon clonée) si le quota Gemini est épuisé
 ```
 
 La bascule n'a lieu que sur le **premier lot**, avant qu'un octet d'audio
@@ -353,8 +355,10 @@ voix dans la même bande son.
 | `Capacity temporarily exceeded` (Cloudflare) | GPU saturés, passager | réessai automatique, rien à faire |
 | `Additional properties '/seed' not allowed` | modèle d'image changé | retirer `CLOUDFLARE_IMAGE_MODEL` du `.env` |
 | `Executable doesn't exist` (Playwright) | build Chromium incompatible | `uv run playwright install chromium` |
-| `No module named 'riva'` (ou autre dépendance déclarée) | interpréteur hors du venv (conda actif, `python` nu) | toujours passer par `uv run` ou `make` ; en urgence `--tts-provider edge` |
-| `2040 > 2000` (NVIDIA TTS) | texte trop long, compté après normalisation serveur | normalement évité par les lots ; sinon `TTS_PROVIDER=edge` |
+| `No module named 'riva'` (ou autre dépendance déclarée) | interpréteur hors du venv (conda actif, `python` nu) | toujours passer par `uv run` ou `make` ; en urgence `--tts-provider qwen3` |
+| `2040 > 2000` (NVIDIA TTS) | texte trop long, compté après normalisation serveur | normalement évité par les lots ; sinon `TTS_PROVIDER=qwen3` |
+| `Moteur TTS 'qwen3' indisponible` | `WAN2GP_DIR` absent du `.env`, ou exécution sous Airflow | renseigner `WAN2GP_DIR` ; sous Docker, `gemini` ou `nvidia` |
+| Un terme anglais mal prononcé par qwen3 | Qwen3 le lit comme un mot français | ajouter sa graphie dans `media/assets/prononciations.json`, valider à l'écoute |
 | `404 Not found for account` (NVIDIA) | modèle hors du palier du compte, ou retiré | le repli essaie le modèle de secours ; sinon `NVIDIA_MODEL` |
 | Karaoké et sous-titres absents, sans erreur | `faster-whisper` non installé | `make install-subs` |
 | `astro n'est pas reconnu` | PATH pas rechargé | ouvrir un nouveau terminal |

@@ -245,6 +245,7 @@ def reformulate_article(
     source: str,
     provider: str | None = None,
     figures: "list | None" = None,
+    consignes: str = "",
 ) -> dict:
     """
     Envoie un article au LLM pour reformulation en script de vidéo pédagogique.
@@ -255,6 +256,9 @@ def reformulate_article(
         source_id: Identifiant unique de la source
         source:    Nom de la source (arxiv, huggingface_blog, ...)
         provider:  Fournisseur LLM ; None = LLM_PROVIDER puis défaut
+        consignes: Corrections à apporter à un script précédent, ajoutées en
+                   fin de prompt. Vide au premier passage ; c'est la boucle de
+                   `automation/graphe_script.py` qui les remplit.
 
     Returns:
         Dictionnaire contenant le script structuré pour la vidéo
@@ -262,6 +266,8 @@ def reformulate_article(
     prompt = SLIDE_PROMPT.format(
         title=title, summary=summary[:RESUME_MAX], figures=_bloc_figures(figures)
     )
+    if consignes:
+        prompt += "\n\n" + consignes
     logger.info("Reformulation de : %s", title[:60])
 
     # La trace dit quel fournisseur a *réellement* répondu : après un repli

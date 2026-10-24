@@ -22,7 +22,7 @@ from airflow.sdk import Param, dag, task
 
 DOC = __doc__
 
-VOIX = ["vivienne", "remy", "denise", "henri"]
+VOIX = ["Charon", "Kore", "Puck", "Fenrir"]  # quelques voix Gemini, la liste complète est dans media/tts.py
 MODELES_WHISPER = ["tiny", "base", "small", "medium"]
 
 
@@ -78,7 +78,8 @@ MODELES_WHISPER = ["tiny", "base", "small", "medium"]
             type="string",
             title="Voix de synthèse",
             description="Vide = voix par défaut du moteur (Charon pour Gemini). "
-                        f"Moteur edge : {', '.join(VOIX)}.",
+                        f"Exemples Gemini : {', '.join(VOIX)}. Le moteur qwen3, "
+                        "local, n'existe pas sous Airflow.",
         ),
         "whisper_model": Param(
             "base", enum=MODELES_WHISPER, title="Modèle de transcription"

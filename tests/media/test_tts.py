@@ -2,8 +2,8 @@
 Tests de media/tts.py : nettoyage de texte, segmentation et repli de moteur.
 
 Aucun appel réseau ni ffmpeg ici — _synthetiser_gemini/_synthetiser_nvidia et
-la synthèse edge-tts elle-même restent hors de cette suite, qui couvre la
-logique pure autour d'elles.
+Wan2GP lui-même restent hors de cette suite, qui couvre la logique pure autour
+d'eux (voir aussi test_wan2gp.py).
 """
 
 import sys
@@ -15,12 +15,9 @@ from media.tts import (
     FOURNISSEURS,
     LOTISSEMENTS,
     NVIDIA_VOIX_DEFAUT,
-    VOICES,
-    VOIX_REPLI,
     QuotaEpuise,
     _basculer,
     _clean_text,
-    _fix_pronunciation,
     _lots,
     _moteur_repli,
     _repli_actif,
@@ -111,27 +108,17 @@ def test_build_script_text_slide_vide_est_ignoree():
     assert "slide_03" not in [s[0] for s in segments]
 
 
-# ── _fix_pronunciation ────────────────────────────────────────────────────────
-
-def test_epelle_les_acronymes_tout_majuscules():
-    resultat = _fix_pronunciation("On utilise BERT pour ça", ["BERT"])
-    assert resultat == "On utilise B. E. R. T. pour ça"
-
-
-def test_ne_touche_pas_aux_termes_mixtes():
-    """VivienneMultilingual prononce déjà bien les termes non tout-majuscules."""
-    resultat = _fix_pronunciation("On utilise Transformer pour ça", ["Transformer"])
-    assert resultat == "On utilise Transformer pour ça"
-
-
-def test_sans_termes_anglais_texte_inchange():
-    assert _fix_pronunciation("Un texte quelconque", []) == "Un texte quelconque"
-
-
 # ── Fournisseur / voix ────────────────────────────────────────────────────────
 
 def test_resoudre_fournisseur_connu():
-    assert resoudre_fournisseur("edge") == "edge"
+    assert resoudre_fournisseur("qwen3") == "qwen3"
+
+
+def test_edge_a_ete_retire():
+    """Retiré le 24/10/2026 : un .env resté sur edge doit échouer clairement,
+    pas tomber en silence sur un autre moteur."""
+    with pytest.raises(ValueError, match="inconnu"):
+        resoudre_fournisseur("edge")
 
 
 def test_resoudre_fournisseur_inconnu_leve():
@@ -152,8 +139,13 @@ def test_voix_par_defaut_nvidia_repli_sur_constante(monkeypatch):
 def test_voix_disponibles_couvre_les_trois_moteurs():
     d = voix_disponibles()
     assert set(d) == set(FOURNISSEURS)
-    assert set(VOICES) <= set(d["edge"])
+    assert "charon" in d["qwen3"]               # la voix versionnée dans le dépôt
     assert "Louise" in d["nvidia"] and "Pascal" in d["nvidia"]
+
+
+def test_voix_par_defaut_qwen3(monkeypatch):
+    monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
+    assert _voix_par_defaut("qwen3") == "charon"
 
 
 # ── Lotissement des appels de synthèse ───────────────────────────────────────
@@ -200,8 +192,8 @@ def test_un_segment_plus_long_que_le_budget_part_seul():
 
 
 def test_un_moteur_sans_bornes_fait_un_seul_lot():
-    """edge n'a ni quota ni plafond — et passe de toute façon par l'autre chemin."""
-    assert len(_lots(_segments(9), "edge")) == 1
+    """Un moteur absent de LOTISSEMENTS prend les bornes par défaut, larges."""
+    assert len(_lots(_segments(9), "moteur-sans-bornes")) == 1
 
 
 def test_aucun_segment_donne_aucun_lot():
@@ -236,9 +228,9 @@ def test_repli_explicite_prime_sur_lenv(monkeypatch):
     assert _repli_actif(explicite=False) is False
 
 
-def test_moteur_repli_booleen_retombe_sur_edge(monkeypatch):
+def test_moteur_repli_booleen_retombe_sur_qwen3(monkeypatch):
     monkeypatch.setenv("TTS_FALLBACK", "1")
-    assert _moteur_repli() == "edge"
+    assert _moteur_repli() == "qwen3"
 
 
 def test_moteur_repli_nomme_explicitement(monkeypatch):
@@ -246,9 +238,9 @@ def test_moteur_repli_nomme_explicitement(monkeypatch):
     assert _moteur_repli() == "nvidia"
 
 
-def test_moteur_repli_valeur_absente_retombe_sur_edge(monkeypatch):
+def test_moteur_repli_valeur_absente_retombe_sur_qwen3(monkeypatch):
     monkeypatch.delenv("TTS_FALLBACK", raising=False)
-    assert _moteur_repli() == "edge"
+    assert _moteur_repli() == "qwen3"
 
 
 def _cause():
@@ -258,12 +250,11 @@ def _cause():
     )
 
 
-def test_basculer_sur_edge_utilise_la_voix_de_repli_dediee(monkeypatch):
+def test_basculer_sur_qwen3_garde_la_voix_charon(monkeypatch):
+    """Tout l'intérêt du repli local : la vidéo garde la voix de la chaîne."""
     monkeypatch.setenv("TTS_FALLBACK", "1")
-    moteur, voix, termes = _basculer(_cause())
-    assert moteur == "edge"
-    assert voix == VOIX_REPLI
-    assert termes == []
+    monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
+    assert _basculer(_cause()) == ("qwen3", "charon")
 
 
 def test_basculer_sur_nvidia_respecte_la_voix_configuree(monkeypatch):
@@ -274,9 +265,7 @@ def test_basculer_sur_nvidia_respecte_la_voix_configuree(monkeypatch):
     """
     monkeypatch.setenv("TTS_FALLBACK", "nvidia")
     monkeypatch.setenv("NVIDIA_TTS_VOICE", "Pascal")
-    moteur, voix, termes = _basculer(_cause())
-    assert moteur == "nvidia"
-    assert voix == "Pascal"
+    assert _basculer(_cause()) == ("nvidia", "Pascal")
 
 
 # ── Client NVIDIA absent ────────────────────────────────────────────────────
@@ -311,7 +300,7 @@ def test_client_riva_absent_nomme_la_cause_et_la_sortie(sans_client_riva, tmp_pa
     message = str(echec.value)
     assert "riva.client" in message
     assert "uv run" in message              # comment relancer correctement
-    assert "edge" in message                # la sortie sans rien installer
+    assert "--tts-provider" in message      # la sortie sans rien installer
     assert sys.executable in message        # quel interpréteur a échoué
 
 
@@ -339,13 +328,23 @@ def test_dependance_manquante_detecte_riva_absent(sans_client_riva):
     assert dependance_manquante("nvidia") == "riva.client"
 
 
-@pytest.mark.parametrize("moteur", ["edge", "gemini"])
-def test_moteurs_sans_client_differe_nont_rien_a_verifier(moteur):
-    """`edge` et `gemini` importent leurs dépendances en tête de module : leur
-    absence se voit à l'import, pas à l'usage."""
+def test_gemini_na_rien_a_verifier():
+    """`gemini` importe sa dépendance en tête de module : son absence se voit à
+    l'import, pas à l'usage."""
     from media.tts import dependance_manquante
 
-    assert dependance_manquante(moteur) == ""
+    assert dependance_manquante("gemini") == ""
+
+
+def test_qwen3_sans_wan2gp_est_signale_avant_de_produire(monkeypatch):
+    """Sous Airflow, WAN2GP_DIR n'existe pas : le contrôle préalable doit le
+    dire avant l'appel au LLM, et le message nommer les autres moteurs."""
+    from media.tts import dependance_manquante, message_dependance
+
+    monkeypatch.delenv("WAN2GP_DIR", raising=False)
+    absence = dependance_manquante("qwen3")
+    assert "WAN2GP_DIR" in absence
+    assert "gemini" in message_dependance("qwen3", absence)
 
 
 def test_moteur_inconnu_ne_reclame_rien():
@@ -400,7 +399,7 @@ def test_un_lot_refuse_est_rejoue_en_deux_moities(monkeypatch, tmp_path):
 
     vus: list[int] = []
 
-    def serveur_capricieux(texte, sortie, voix, segment_type, termes, fournisseur):
+    def serveur_capricieux(texte, sortie, voix, segment_type, fournisseur):
         vus.append(len(texte))
         if len(texte) > 40:
             raise RuntimeError("400 INVALID_ARGUMENT")
@@ -411,7 +410,7 @@ def test_un_lot_refuse_est_rejoue_en_deux_moities(monkeypatch, tmp_path):
                         lambda parts, cible: cible.write_bytes(b"joint"))
 
     lot = [(f"s{i}", "x" * 30, "content") for i in range(4)]
-    tts._synthetiser_ou_scinder(lot, tmp_path / "out.mp3", "Charon", [],
+    tts._synthetiser_ou_scinder(lot, tmp_path / "out.mp3", "Charon",
                                 "gemini", tmp_path, 0)
 
     assert (tmp_path / "out.mp3").exists()
@@ -432,7 +431,7 @@ def test_un_segment_unique_ne_se_coupe_pas(monkeypatch, tmp_path):
     monkeypatch.setattr(tts, "_synthetiser", toujours_refuse)
     with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
         tts._synthetiser_ou_scinder([("s0", "x" * 900, "content")],
-                                    tmp_path / "o.mp3", "Charon", [],
+                                    tmp_path / "o.mp3", "Charon",
                                     "gemini", tmp_path, 0)
 
 
@@ -445,7 +444,7 @@ def test_la_scission_ne_change_jamais_de_moteur(monkeypatch, tmp_path):
 
     moteurs: list[str] = []
 
-    def noter(texte, sortie, voix, segment_type, termes, fournisseur):
+    def noter(texte, sortie, voix, segment_type, fournisseur):
         moteurs.append(fournisseur)
         if len(texte) > 40:
             raise RuntimeError("400")
@@ -456,7 +455,7 @@ def test_la_scission_ne_change_jamais_de_moteur(monkeypatch, tmp_path):
                         lambda parts, cible: cible.write_bytes(b"j"))
 
     lot = [(f"s{i}", "y" * 30, "content") for i in range(4)]
-    tts._synthetiser_ou_scinder(lot, tmp_path / "o.mp3", "Charon", [],
+    tts._synthetiser_ou_scinder(lot, tmp_path / "o.mp3", "Charon",
                                 "gemini", tmp_path, 0)
     assert set(moteurs) == {"gemini"}
 
@@ -475,5 +474,5 @@ def test_un_quota_epuise_nest_pas_traite_par_une_coupe(monkeypatch, tmp_path):
     monkeypatch.setattr(tts, "_synthetiser", epuise)
     with pytest.raises(QuotaEpuise):
         tts._synthetiser_ou_scinder([("a", "x" * 50, "content"), ("b", "y" * 50, "content")],
-                                    tmp_path / "o.mp3", "Charon", [],
+                                    tmp_path / "o.mp3", "Charon",
                                     "gemini", tmp_path, 0)

@@ -371,20 +371,34 @@ async def _mesurer(html_files: list[Path]) -> dict[str, list[str]]:
     return defauts
 
 
+def defauts_mise_en_page(script_path: Path) -> dict[str, list[str]]:
+    """
+    Défauts de mise en page de chaque slide, sans rien refuser.
+
+    Séparée de `verifier_mise_en_page` pour la boucle de correction du graphe
+    (`automation/graphe_script.py`) : elle a besoin de la liste, à renvoyer au
+    modèle, et non d'une exception. La mise en page ne dépend pas des durées :
+    les slides sont générées sans elles.
+
+    Returns:
+        {slide_id: [défauts]} ; vide si toutes les slides tiennent
+    """
+    from content.slides import generate_html_slides
+
+    return asyncio.run(_mesurer(generate_html_slides(script_path)))
+
+
 def verifier_mise_en_page(script_path: Path) -> None:
     """
     Refuse un script dont une slide sortirait de la zone utile.
 
     À appeler avant la synthèse vocale : le défaut se voit alors en quelques
     secondes, au lieu de minutes de rendu et d'un appel de quota consommé.
-    La mise en page ne dépend pas des durées : les slides sont générées sans elles.
 
     Raises:
         ValueError: Liste des slides fautives et de leurs défauts
     """
-    from content.slides import generate_html_slides
-
-    defauts = asyncio.run(_mesurer(generate_html_slides(script_path)))
+    defauts = defauts_mise_en_page(script_path)
     if defauts:
         detail = "\n".join(
             f"  {slide} : {' ; '.join(fautes)}" for slide, fautes in defauts.items()

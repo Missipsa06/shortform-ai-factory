@@ -1,0 +1,8 @@
+{
+  "_lisez-moi": "Graphie à la française de la prononciation anglaise d'usage, appliquée au seul texte envoyé à Qwen3 (le karaoké garde l'orthographe d'origine). Écrite à la main et validée à l'écoute, jamais générée. Les clés sont cherchées sans tenir compte de la casse, en mot entier ; les plus longues passent en premier.",
+  "Claude Code": "Clôde Code",
+  "Claude": "Clôde",
+  "Tmux": "Ti-max",
+  "send-keys": "sènde-kize",
+  "capture-pane": "captcheur-péne"
+}

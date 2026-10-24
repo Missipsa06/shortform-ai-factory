@@ -1,21 +1,25 @@
 """
-Synthèse vocale française, avec deux moteurs interchangeables.
+Synthèse vocale française, avec trois moteurs interchangeables.
 
 Choisi par TTS_PROVIDER dans .env :
 
     gemini  Gemini TTS — voix nettement plus naturelle, et surtout dirigeable :
             on décrit l'interprétation en français au lieu de régler trois
-            molettes. Débit plus lent, donc vidéos plus longues à script égal.
-    edge    edge-tts (Microsoft, gratuit, sans clé) — repli, et seule option
-            hors ligne. Ses cinq voix françaises sont son plafond.
+            molettes. Préversion à 10 appels par jour.
+    qwen3   Qwen3-TTS en local par Wan2GP (media/wan2gp.py), voix Charon
+            clonée — sans quota, mais hors de l'image Docker (GPU requis).
+    nvidia  Magpie TTS hébergé par NVIDIA, deux voix françaises.
+
+edge-tts a été retiré le 24/10/2026 : ses voix, plafonnées à cinq, étaient
+celles que la chaîne n'avait pas retenues, et Qwen3 le remplace comme repli
+sans quota en gardant la voix Charon.
 
 Usage :
     python -m media.tts --input data/processed/manuel_rag.json
-    python -m media.tts --text "Bonjour." --output data/audio/test.mp3 --provider gemini
+    python -m media.tts --text "Bonjour." --output data/audio/test.mp3 --provider qwen3
 """
 
 import argparse
-import asyncio
 import base64
 import json
 import logging
@@ -28,33 +32,32 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import edge_tts
 import requests
 from dotenv import load_dotenv
 
 from content.quota import Diagnostic, diagnostiquer, prochaine_reinitialisation
+from media import wan2gp
 from media.ffmpeg_utils import ffmpeg as find_ffmpeg
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-FOURNISSEURS = ("edge", "gemini", "nvidia")
+FOURNISSEURS = ("gemini", "qwen3", "nvidia")
 FOURNISSEUR_DEFAUT = "gemini"
 
 # Contrairement au LLM, le repli est ici **désactivé par défaut**. La voix est un
 # choix éditorial : basculer d'office sur un autre moteur fabriquerait des
 # vidéos dans une voix qui n'a pas été retenue, et le défaut ne s'entendrait
-# qu'à la lecture. À activer (TTS_FALLBACK=1) pendant le travail sur le visuel,
-# où la voix importe peu.
+# qu'à la lecture. À activer (TTS_FALLBACK=1) pendant le travail sur le visuel.
 #
-# La valeur peut aussi nommer le moteur de repli : "1"/"true"/... retient edge
-# (comportement historique, gratuit et hors ligne), "nvidia" bascule plutôt sur
-# magpie-tts-multilingual — utile pour garder une voix hébergée plutôt que
-# tomber sur les cinq voix d'edge quand Gemini est à quota.
+# La valeur peut aussi nommer le moteur de repli : "1"/"true"/... retient qwen3,
+# qui garde la voix Charon par clonage et n'a pas de quota ; "nvidia" bascule
+# sur magpie-tts-multilingual, seul repli possible sous Airflow, où Wan2GP
+# n'existe pas.
 FALLBACK_ENV = "TTS_FALLBACK"
 _VRAI = frozenset({"1", "true", "oui", "yes", "on"})
-_MOTEURS_REPLI = frozenset({"edge", "nvidia"})
-MOTEUR_REPLI_DEFAUT = "edge"
+_MOTEURS_REPLI = frozenset({"qwen3", "nvidia"})
+MOTEUR_REPLI_DEFAUT = "qwen3"
 
 
 class QuotaEpuise(RuntimeError):
@@ -68,19 +71,6 @@ class QuotaEpuise(RuntimeError):
     def __init__(self, message: str, diagnostic: Diagnostic) -> None:
         super().__init__(message)
         self.diagnostic = diagnostic
-
-# ── edge-tts ──────────────────────────────────────────────────────────────────
-DEFAULT_VOICE = "fr-FR-VivienneMultilingualNeural"  # Voix naturelle et expressive
-VOICES = {
-    "vivienne": "fr-FR-VivienneMultilingualNeural",  # Féminine, très naturelle
-    "remy":     "fr-FR-RemyMultilingualNeural",      # Masculine, moderne
-    "denise":   "fr-FR-DeniseNeural",                # Féminine, standard
-    "henri":    "fr-FR-HenriNeural",                 # Masculine, standard
-}
-
-# Voix de repli quand Gemini est indisponible : masculine comme Charon, et
-# multilingue, donc capable de prononcer les termes anglais sans épellation.
-VOIX_REPLI = VOICES["remy"]
 
 # ── Gemini TTS ────────────────────────────────────────────────────────────────
 GEMINI_VOIX_DEFAUT = "Charon"
@@ -231,8 +221,8 @@ def voix_disponibles() -> dict[str, list[str]]:
     la répercuter partout, plutôt que de la dupliquer dans chaque appelant.
     """
     return {
-        "edge": sorted(VOICES),
         "gemini": GEMINI_VOIX_DISPONIBLES,
+        "qwen3": wan2gp.voix_disponibles(),
         "nvidia": NVIDIA_VOIX_DISPONIBLES,
     }
 
@@ -253,11 +243,10 @@ def resoudre_fournisseur(explicite: str | None = None) -> str:
 
 
 # Module tiers chargé au dernier moment par un moteur, quand il y en a un.
-# `edge` et `gemini` passent par des dépendances importées en tête de module :
-# leur absence se voit à l'import, donc immédiatement. Seul NVIDIA charge son
-# client gRPC au moment de synthétiser, d'où ce tableau — et la seule entrée
-# qu'il contienne aujourd'hui. Un futur moteur à client lourd s'y ajoute sans
-# rien changer d'autre.
+# `gemini` passe par `requests`, importé en tête de module : son absence se voit
+# à l'import, donc immédiatement. NVIDIA charge son client gRPC au moment de
+# synthétiser, d'où ce tableau. Qwen3 n'a pas de module : il lui faut une
+# installation de Wan2GP, vérifiée à part par `wan2gp.absence()`.
 MODULE_REQUIS: dict[str, str] = {"nvidia": "riva.client"}
 
 
@@ -272,13 +261,16 @@ def dependance_manquante(fournisseur: str) -> str:
     endroit du pipeline et non seulement au point d'usage.
 
     Args:
-        fournisseur: Nom du moteur ('edge', 'gemini', 'nvidia')
+        fournisseur: Nom du moteur ('gemini', 'qwen3', 'nvidia')
 
     Returns:
-        Le nom du module manquant, ou '' si le moteur est utilisable.
+        Ce qui manque (un module, ou pour qwen3 l'installation de Wan2GP), ou ''
+        si le moteur est utilisable.
     """
     import importlib.util
 
+    if fournisseur == "qwen3":
+        return wan2gp.absence()
     module = MODULE_REQUIS.get(fournisseur, "")
     if not module:
         return ""
@@ -303,13 +295,23 @@ def message_dependance(fournisseur: str, module: str) -> str:
     ces modules sont des dépendances déclarées et verrouillées, donc leur absence
     signale presque toujours un `python` hérité d'un autre environnement plutôt
     qu'une installation incomplète.
+
+    Pour qwen3, `module` porte la raison donnée par `wan2gp.absence()` : rien à
+    voir avec l'interpréteur, c'est une installation externe au projet.
     """
+    if fournisseur == "qwen3":
+        return (
+            f"Le moteur TTS 'qwen3' est indisponible : {module}. Il exige Wan2GP "
+            "installé sur la machine (WAN2GP_DIR dans .env) et n'existe pas dans "
+            "l'image Docker. Autre moteur : --tts-provider gemini ou nvidia."
+        )
     return (
         f"Le moteur TTS '{fournisseur}' a besoin de '{module}', introuvable dans "
         f"cet interpréteur ({sys.executable}). C'est pourtant une dépendance "
         "déclarée : l'exécution ne passe probablement pas par le venv du projet. "
         "Lancer par `uv run …` ou `make` ; `uv sync` réinstalle au besoin. "
-        "Sortie immédiate sans rien installer : --tts-provider edge."
+        "Sortie immédiate, sans rien installer : un autre moteur avec "
+        "--tts-provider gemini ou qwen3."
     )
 
 
@@ -317,8 +319,8 @@ def _consigne_jeu(segment_type: str) -> str:
     """
     Consigne d'interprétation envoyée au modèle, en langage naturel.
 
-    C'est l'apport principal de Gemini sur edge-tts : on décrit le jeu attendu
-    au lieu de régler une vitesse et une hauteur.
+    C'est l'apport principal de Gemini sur les moteurs paramétriques : on décrit
+    le jeu attendu au lieu de régler une vitesse et une hauteur.
     """
     nuances = {
         "hook": "avec une accroche vive et intriguée qui donne envie d'écouter la suite",
@@ -402,7 +404,7 @@ def _synthetiser_gemini(
             raise QuotaEpuise(
                 f"Gemini TTS : {diag.message}. "
                 f"Réinitialisation vers {prochaine_reinitialisation()}. "
-                f"Pour produire malgré tout avec edge-tts : TTS_FALLBACK=1",
+                f"Pour produire malgré tout avec Qwen3 en local : TTS_FALLBACK=1",
                 diag,
             )
 
@@ -471,7 +473,7 @@ def _synthetiser_nvidia(texte: str, sortie: Path, voix: str) -> None:
         raise RuntimeError(
             f"NVIDIA TTS plafonne l'entrée à {NVIDIA_MAX_CARACTERES} caractères, "
             f"or le texte en fait {len(texte)}. La narration groupée d'un script "
-            f"de 6 slides atteint déjà cette limite : utiliser --tts-provider edge, "
+            f"de 6 slides atteint déjà cette limite : utiliser --tts-provider qwen3, "
             f"qui synthétise segment par segment, ou raccourcir le script."
         )
 
@@ -506,15 +508,6 @@ def _synthetiser_nvidia(texte: str, sortie: Path, voix: str) -> None:
         raise RuntimeError(
             f"Conversion PCM → MP3 échouée : {resultat.stderr.decode(errors='replace')[-300:]}"
         )
-
-
-def _get_prosody(segment_type: str) -> tuple[str, str, str]:
-    """Retourne (rate, pitch, volume) selon le type de segment."""
-    if segment_type == "hook":
-        return "-5%", "+5Hz", "+10%"
-    if segment_type == "conclusion":
-        return "-5%", "+0Hz", "+0%"
-    return "-10%", "+0Hz", "+0%"
 
 
 def _clean_text(text: str) -> str:
@@ -576,65 +569,34 @@ def build_script_text(script: dict) -> list[tuple[str, str, str]]:
     return segments
 
 
-def _fix_pronunciation(text: str, en_terms: list[str]) -> str:
-    """
-    Améliore la prononciation des termes techniques sans SSML — edge-tts seulement.
-
-    Ce contournement n'est appliqué qu'au moteur edge : il s'entend (« B. E. R. T. »)
-    et n'a de raison d'être que parce qu'edge-tts n'expose pas de balise de
-    prononciation. Gemini reçoit le texte intact.
-
-    - Les acronymes tout-majuscules (BERT, GPT, LLM) sont espacés lettre par lettre
-    - Les autres termes anglais sont laissés tels quels (VivienneMultilingual les prononce bien)
-    """
-    if not en_terms:
-        return text
-
-    sorted_terms = sorted(en_terms, key=len, reverse=True)
-    for term in sorted_terms:
-        if term.isupper() and len(term) > 1:
-            # Acronyme : "BERT" → "B. E. R. T." pour forcer l'épellation
-            spelled = ". ".join(list(term)) + "."
-            text = re.sub(r"\b" + re.escape(term) + r"\b", spelled, text)
-    return text
-
-
-async def _synthesize(
-    text: str,
-    output_path: Path,
-    voice: str,
-    segment_type: str = "content",
-    en_terms: list[str] | None = None,
-) -> None:
-    """Synthétise un texte en MP3 via edge-tts (texte brut, prononciation corrigée)."""
-    rate, pitch, volume = _get_prosody(segment_type)
-    content = _fix_pronunciation(text, en_terms or [])
-    communicate = edge_tts.Communicate(text=content, voice=voice, rate=rate, pitch=pitch, volume=volume)
-    await communicate.save(str(output_path))
-
-
 def _synthetiser(
     texte: str,
     sortie: Path,
     voix: str,
     segment_type: str,
-    en_terms: list[str],
     fournisseur: str,
 ) -> None:
-    """Aiguille vers le moteur choisi."""
+    """
+    Aiguille vers le moteur choisi.
+
+    Qwen3 reçoit ici un seul texte, donc un lancement de Wan2GP pour lui seul :
+    acceptable pour `--text` en CLI, ruineux pour une vidéo. La narration d'un
+    script passe par `generer_audio_qwen3`, qui lance Wan2GP une fois en tout.
+    """
     if fournisseur == "gemini":
         _synthetiser_gemini(texte, sortie, voix, segment_type)
     elif fournisseur == "nvidia":
         _synthetiser_nvidia(texte, sortie, voix)
+    elif fournisseur == "qwen3":
+        wan2gp.synthetiser([wan2gp.prononcer(texte)], [sortie], voix)
     else:
-        asyncio.run(_synthesize(texte, sortie, voix, segment_type, en_terms))
+        raise ValueError(f"Moteur TTS inconnu : '{fournisseur}'")
 
 
 def _synthetiser_ou_scinder(
     lot: list[tuple],
     cible: Path,
     voix: str,
-    termes: list[str],
     fournisseur: str,
     travail: Path,
     rang: int,
@@ -660,7 +622,7 @@ def _synthetiser_ou_scinder(
     """
     texte = "\n".join(t for _, t, _ in lot)
     try:
-        _synthetiser(texte, cible, voix, "content", termes, fournisseur)
+        _synthetiser(texte, cible, voix, "content", fournisseur)
         return
     except (QuotaEpuise, EnvironmentError):
         raise                       # traités par l'appelant, pas par une coupe
@@ -677,20 +639,18 @@ def _synthetiser_ou_scinder(
     morceaux: list[Path] = []
     for i, moitie in enumerate(moities):
         part = travail / f"lot_{rang:02d}_{i}.mp3"
-        _synthetiser_ou_scinder(
-            moitie, part, voix, termes, fournisseur, travail, rang
-        )
+        _synthetiser_ou_scinder(moitie, part, voix, fournisseur, travail, rang)
         morceaux.append(part)
     concatenate_segments(morceaux, cible)
 
 
 def _voix_par_defaut(fournisseur: str) -> str:
     """Voix retenue si l'appelant n'en impose pas."""
-    if fournisseur == "gemini":
-        return os.getenv("GEMINI_TTS_VOICE") or GEMINI_VOIX_DEFAUT
+    if fournisseur == "qwen3":
+        return os.getenv(wan2gp.VOIX_ENV) or wan2gp.VOIX_DEFAUT
     if fournisseur == "nvidia":
         return os.getenv("NVIDIA_TTS_VOICE") or NVIDIA_VOIX_DEFAUT
-    return DEFAULT_VOICE
+    return os.getenv("GEMINI_TTS_VOICE") or GEMINI_VOIX_DEFAUT
 
 
 def _repli_actif(explicite: "bool | None" = None) -> bool:
@@ -707,115 +667,62 @@ def _repli_actif(explicite: "bool | None" = None) -> bool:
 
 
 def _moteur_repli() -> str:
-    """Moteur de repli désigné par TTS_FALLBACK ; edge par défaut si absent ou booléen."""
+    """Moteur de repli désigné par TTS_FALLBACK ; qwen3 par défaut si absent ou booléen."""
     valeur = os.getenv(FALLBACK_ENV, "").strip().lower()
     return valeur if valeur in _MOTEURS_REPLI else MOTEUR_REPLI_DEFAUT
 
 
-def _basculer(cause: QuotaEpuise) -> tuple[str, str, list[str]]:
+def _basculer(cause: QuotaEpuise) -> tuple[str, str]:
     """
-    Journalise la dégradation et retourne le moteur de repli, sa voix, ses termes.
+    Journalise la dégradation et retourne le moteur de repli et sa voix.
 
     Le message est en WARNING et nomme la voix effectivement utilisée : une
     bascule silencieuse produirait une vidéo qui paraît normale mais n'a pas la
     voix choisie, ce qui ne se découvre qu'à l'écoute.
 
-    La liste de termes anglais retournée est vide à dessein : l'épellation des
-    acronymes (« B. E. R. T. ») ne sert qu'aux voix edge monolingues ; les voix
-    de repli (edge multilingue, nvidia) prononcent l'anglais nativement.
-
-    La voix edge de repli (VOIX_REPLI) est délibérément fixe — masculine et
-    multilingue, choisie pour ce rôle précis, indépendamment de la voix edge
-    principale. Nvidia n'a pas cette distinction : sa voix de repli est celle
-    configurée par NVIDIA_TTS_VOICE, pas une constante figée — l'ignorer ferait
-    parler « Louise » à qui a choisi « Pascal ».
+    La voix de repli est celle configurée pour le moteur (QWEN3_TTS_VOICE,
+    NVIDIA_TTS_VOICE), jamais une constante figée — l'ignorer ferait parler
+    « Louise » à qui a choisi « Pascal ».
 
     Returns:
-        (moteur, voix, termes anglais à épeler)
+        (moteur, voix)
     """
     logger.warning("%s", cause)
     moteur = _moteur_repli()
-    voix = _voix_par_defaut("nvidia") if moteur == "nvidia" else VOIX_REPLI
+    voix = _voix_par_defaut(moteur)
     logger.warning(
         "Repli sur %s / %s — la voix ne sera PAS celle demandée", moteur, voix
     )
-    return moteur, voix, []
+    return moteur, voix
 
 
-def generate_audio_segments(
+def generer_audio_qwen3(
     script: dict,
     output_dir: Path,
+    final_path: Path,
     voice: str = "",
-    provider: str | None = None,
-    fallback: "bool | None" = None,
-) -> list[Path]:
+) -> tuple[Path, list[Path]]:
     """
-    Génère un fichier MP3 par segment (hook, slides, conclusion).
+    Synthétise la narration par Qwen3, un fichier par segment, en un lancement.
 
-    Args:
-        script:     Script JSON généré par llm.py
-        output_dir: Dossier de destination des MP3
-        voice:      Voix à utiliser ; vide = celle du moteur par défaut
-        provider:   Moteur TTS ; None = TTS_PROVIDER dans .env puis défaut
-        fallback:   Autoriser la bascule sur un moteur de repli ; None = TTS_FALLBACK
+    Contrairement au chemin groupé, rien n'est à redécouper : chaque segment a
+    son propre fichier, donc ses frontières sont exactes par construction, sans
+    transcription pour les retrouver. La bande son est leur simple concaténation.
+
+    Les textes passent par `wan2gp.prononcer` : le moteur lit la graphie
+    phonétique, le karaoké garde l'orthographe du script.
 
     Returns:
-        Liste ordonnée des fichiers MP3 générés
+        (bande son complète, segments dans l'ordre)
     """
-    fournisseur = resoudre_fournisseur(provider)
-    voice = voice or _voix_par_defaut(fournisseur)
-    # Les raccourcis (« vivienne ») n'ont de sens que pour edge : résolus ici,
-    # les appelants n'ont pas à savoir quel moteur est actif.
-    if fournisseur == "edge":
-        voice = VOICES.get(voice, voice)
-    output_dir.mkdir(parents=True, exist_ok=True)
     segments = build_script_text(script)
-    en_terms: list[str] = script.get("termes_anglais", [])
-
     if not segments:
-        logger.warning("Aucun segment audio à générer")
-        return []
-
-    # L'épellation des acronymes ne concerne qu'edge-tts : Gemini reçoit le texte
-    # intact et prononce les termes anglais nativement.
-    if en_terms and fournisseur == "edge":
-        logger.info("Termes anglais épelés pour edge-tts : %s", en_terms)
-
-    logger.info(
-        "Génération de %d segments audio (moteur: %s, voix: %s)",
-        len(segments), fournisseur, voice,
-    )
-    audio_files: list[Path] = []
-
-    for i, (seg_id, text, seg_type) in enumerate(segments, start=1):
-        output_path = output_dir / f"{seg_id}.mp3"
-        try:
-            try:
-                _synthetiser(text, output_path, voice, seg_type, en_terms, fournisseur)
-            except QuotaEpuise as e:
-                # Bascule tolérée uniquement tant qu'aucun segment n'existe.
-                # Changer de moteur en cours de route mélangerait deux voix dans
-                # la même bande son — c'est arrivé, et la vidéo produite
-                # paraissait normale.
-                if audio_files or not _repli_actif(fallback):
-                    raise
-                fournisseur, voice, en_terms = _basculer(e)
-                _synthetiser(text, output_path, voice, seg_type, en_terms, fournisseur)
-
-            logger.info("  ✓ %s", output_path.name)
-            audio_files.append(output_path)
-        except Exception as e:
-            # Interruption immédiate : poursuivre concaténerait une bande son
-            # amputée, et la vidéo produite paraîtrait normale tout en ayant
-            # perdu des slides. Sur un quota épuisé, les appels suivants
-            # échoueraient de toute façon.
-            raise RuntimeError(
-                f"Synthèse interrompue au segment '{seg_id}' ({i}/{len(segments)}) : {e}\n"
-                f"Les {len(audio_files)} segments déjà produits sont conservés dans "
-                f"{output_dir}, mais la bande son est incomplète et inutilisable en l'état."
-            ) from e
-
-    return audio_files
+        raise ValueError("Aucun segment à synthétiser")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fichiers = [output_dir / f"{seg_id}.mp3" for seg_id, _, _ in segments]
+    wan2gp.synthetiser([wan2gp.prononcer(texte) for _, texte, _ in segments],
+                       fichiers, voice)
+    return concatenate_segments(fichiers, final_path), fichiers
 
 
 def _decouper(source: Path, debut: float, fin: float, sortie: Path) -> Path:
@@ -871,8 +778,6 @@ def generer_audio_groupe(
 
     fournisseur = resoudre_fournisseur(provider)
     voice = voice or _voix_par_defaut(fournisseur)
-    if fournisseur == "edge":
-        voice = VOICES.get(voice, voice)
 
     segments = build_script_text(script)
     if not segments:
@@ -890,7 +795,6 @@ def generer_audio_groupe(
     )
 
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    termes = script.get("termes_anglais", [])
 
     with tempfile.TemporaryDirectory() as travail:
         morceaux: list[Path] = []
@@ -902,7 +806,7 @@ def generer_audio_groupe(
             )
             try:
                 _synthetiser_ou_scinder(
-                    lot, cible, voice, termes, fournisseur, Path(travail), rang
+                    lot, cible, voice, fournisseur, Path(travail), rang
                 )
             except QuotaEpuise as e:
                 # **La bascule n'est tolérée que sur le premier lot.** Changer de
@@ -912,9 +816,13 @@ def generer_audio_groupe(
                 # octet d'audio n'existe, la décision reste sûre.
                 if not _repli_actif(fallback) or rang > 0:
                     raise
-                fournisseur, voice, termes = _basculer(e)
+                fournisseur, voice = _basculer(e)
+                # Qwen3 ne se lotit pas : il reprend toute la narration par son
+                # propre chemin, un fichier par segment.
+                if fournisseur == "qwen3":
+                    return generer_audio_qwen3(script, output_dir, final_path, voice)
                 _synthetiser_ou_scinder(
-                    lot, cible, voice, termes, fournisseur, Path(travail), rang
+                    lot, cible, voice, fournisseur, Path(travail), rang
                 )
             morceaux.append(cible)
             if len(lots) > 1:
@@ -1031,7 +939,6 @@ def process_script(
     script_path: Path,
     voice: str = "",
     provider: str | None = None,
-    grouper: bool | None = None,
     fallback: "bool | None" = None,
 ) -> Path:
     """
@@ -1041,7 +948,6 @@ def process_script(
         script_path: Chemin vers le script JSON
         voice:       Voix ; vide = celle du moteur retenu
         provider:    Moteur TTS ; None = TTS_PROVIDER dans .env puis défaut
-        grouper:     Tout synthétiser en un appel ; None = selon le moteur
         fallback:    Autoriser la bascule sur un moteur de repli si le quota est épuisé ;
                      None = TTS_FALLBACK dans .env, désactivé par défaut
 
@@ -1056,22 +962,16 @@ def process_script(
     final_path = AUDIO_DIR / stem / f"{stem}.mp3"
 
     fournisseur = resoudre_fournisseur(provider)
-    if grouper is None:
-        # edge-tts n'a aucun quota : on y garde un appel par segment, ce qui
-        # permet une consigne de jeu propre à chaque type de segment. Les
-        # fournisseurs facturés à la requête sont groupés.
-        grouper = fournisseur != "edge"
-
-    if grouper:
+    # Qwen3 tourne en local, sans quota par requête : un fichier par segment,
+    # sans lots à redécouper. Les moteurs hébergés, limités à la requête, sont
+    # groupés.
+    if fournisseur == "qwen3":
+        final, _ = generer_audio_qwen3(script, segments_dir, final_path, voice)
+    else:
         final, _ = generer_audio_groupe(
             script, segments_dir, final_path, voice, fournisseur, fallback=fallback
         )
-        return final
-
-    audio_files = generate_audio_segments(
-        script, segments_dir, voice, fournisseur, fallback=fallback
-    )
-    return concatenate_segments(audio_files, final_path)
+    return final
 
 
 def main() -> None:
@@ -1089,7 +989,8 @@ def main() -> None:
     parser.add_argument("--output", default="data/audio/", help="Dossier ou fichier de sortie")
     parser.add_argument(
         "--voice", default="",
-        help=f"Voix. edge : {list(VOICES)} ; gemini : nom de voix (defaut {GEMINI_VOIX_DEFAUT})",
+        help=f"Voix. gemini : nom de voix (defaut {GEMINI_VOIX_DEFAUT}) ; "
+             f"qwen3 : {wan2gp.voix_disponibles()} ; nvidia : {NVIDIA_VOIX_DISPONIBLES}",
     )
     parser.add_argument(
         "--provider", choices=FOURNISSEURS,
@@ -1097,7 +998,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--fallback", action="store_true",
-        help="Basculer sur edge-tts si le quota journalier est epuise, "
+        help="Basculer sur qwen3 si le quota journalier est epuise, "
              "au lieu d'echouer (equivaut a TTS_FALLBACK=1)",
     )
     args = parser.parse_args()
@@ -1109,9 +1010,7 @@ def main() -> None:
         if output_path.is_dir() or not output_path.suffix:
             output_path = output_path / "tts_output.mp3"
         voix = args.voice or _voix_par_defaut(fournisseur)
-        if fournisseur == "edge":
-            voix = VOICES.get(voix, voix)
-        _synthetiser(args.text, output_path, voix, "content", [], fournisseur)
+        _synthetiser(args.text, output_path, voix, "content", fournisseur)
         print(f"Audio généré : {output_path}  [{fournisseur}/{voix}]")
 
     else:

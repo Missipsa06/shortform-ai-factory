@@ -49,6 +49,9 @@ data/
 # Sans ces exceptions, les règles ci-dessus emporteraient le logo de la chaîne.
 !content/assets/brand/*.png
 !content/assets/brand/*.jpg
+# ...et les voix de référence du clonage : sans elles, le moteur qwen3 ne
+# trouve aucune voix sur un clone neuf du dépôt.
+!media/assets/voix/*.mp3
 # ...et les schémas de la documentation, que le README affiche.
 !docs/*.png
 

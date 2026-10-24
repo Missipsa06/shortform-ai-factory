@@ -1,0 +1,1 @@
+Réfléchir plus longtemps ne veut pas dire réussir davantage. Je vous montre comment Qwen3.8-Pi a corrigé ce bug de logique.
