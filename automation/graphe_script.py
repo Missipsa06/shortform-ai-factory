@@ -60,6 +60,7 @@ class EtatScript(TypedDict, total=False):
         origine:            D'où vient la matière : source, corpus, agent, fabrique
         script:             Dernier script rédigé
         faits_non_traces:   Nombres et sigles absents de la matière
+        figures_creuses:    Figures sans mesure réelle, scène manquante
         defauts_mise_en_page: {slide_id: [défauts]} du dernier script
         corrections:        Rédactions faites au-delà de la première
     """
@@ -70,6 +71,7 @@ class EtatScript(TypedDict, total=False):
     origine: str
     script: dict
     faits_non_traces: list[str]
+    figures_creuses: list[str]
     defauts_mise_en_page: dict[str, list[str]]
     corrections: int
 
@@ -178,6 +180,64 @@ def faits_non_traces(script: dict, reference: str) -> list[str]:
     return list(dict.fromkeys(ecarts))
 
 
+# ── Figures creuses ───────────────────────────────────────────────────────────
+#
+# Observé le 26/10/2026 sur « claude », script d'OpenRouter : une comparaison
+# « Réponse standard : 1 / Refus protecteur : 0 » et un anneau de `stat` portant
+# « Contexte étendu ». Le prompt interdit les deux, le modèle les a produits
+# quand même — une consigne qu'on ne vérifie pas n'est qu'un souhait. Et aucune
+# scène, alors que Wan2GP était là et que le prompt en fait le choix par défaut
+# d'une slide narrative.
+
+def _nombre(valeur: object) -> "float | None":
+    try:
+        return float(str(valeur).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def figures_creuses(script: dict, scenes_offertes: bool) -> list[str]:
+    """
+    Figures qui dessinent une mesure sans en avoir, et scène absente.
+
+    Args:
+        script:          Script JSON produit par le LLM
+        scenes_offertes: Le type `scene` était proposé (Wan2GP présent)
+
+    Returns:
+        Un message par défaut, adressé au modèle ; vide si rien à redire.
+    """
+    defauts: list[str] = []
+    types = []
+    for slide in script.get("slides") or []:
+        graphique = slide.get("graphique") or {}
+        gtype, donnees = graphique.get("type"), graphique.get("donnees") or {}
+        types.append(gtype)
+        titre = slide.get("titre", "")
+        if gtype == "stat" and not re.search(r"\d", str(donnees.get("valeur", ""))):
+            defauts.append(
+                f"La slide « {titre} » est un \"stat\" sans chiffre "
+                f"(« {donnees.get('valeur', '')} ») : l'anneau mesure une valeur. "
+                "Donne le chiffre du résumé, ou choisis un autre type."
+            )
+        if gtype == "comparaison":
+            valeurs = [_nombre(i.get("valeur")) for i in donnees.get("items") or []
+                       if isinstance(i, dict)]
+            if None in valeurs or len(set(valeurs)) < 2 or set(valeurs) <= {0.0, 1.0}:
+                defauts.append(
+                    f"La slide « {titre} » est une \"comparaison\" sans écart mesuré "
+                    f"({valeurs}) : des barres à 0 et 1, ou égales, inventent une "
+                    "mesure. Compare des valeurs du résumé, ou choisis un autre type."
+                )
+    if scenes_offertes and "scene" not in types and "liste" in types:
+        defauts.append(
+            "Aucune slide ne porte de \"scene\", alors que c'est le choix par défaut "
+            "d'une slide narrative. Remplace au moins une \"liste\" par une scène "
+            "de la mascotte."
+        )
+    return defauts
+
+
 # ── Nœuds ─────────────────────────────────────────────────────────────────────
 
 def _documenter(sujet: Sujet, provider: "str | None") -> tuple[Sujet, str]:
@@ -247,6 +307,7 @@ def _consignes(etat: EtatScript) -> str:
             + ", ".join(f"« {f} »" for f in etat["faits_non_traces"])
             + ". Retire-les, ou remplace-les par ce que dit réellement le résumé."
         )
+    problemes += etat.get("figures_creuses") or []
     for slide, fautes in (etat.get("defauts_mise_en_page") or {}).items():
         problemes.append(
             f"La slide {slide} déborde de l'écran ({' ; '.join(fautes)}). "
@@ -310,18 +371,23 @@ def noeud_rediger(etat: EtatScript) -> EtatScript:
         )
         return {"corrections": MAX_CORRECTIONS}
     return {"script": script, "corrections": corrections,
-            "faits_non_traces": [], "defauts_mise_en_page": {}}
+            "faits_non_traces": [], "figures_creuses": [], "defauts_mise_en_page": {}}
 
 
 def noeud_verifier_faits(etat: EtatScript) -> EtatScript:
-    """Relève les nombres et sigles du script absents de la matière."""
+    """Relève les faits absents de la matière, et les figures creuses."""
+    from media import wan2gp
+
     sujet = etat["sujet"]
     ecarts = faits_non_traces(etat["script"], f"{sujet.titre}\n{sujet.resume}")
     if ecarts:
         logger.warning("Faits absents de la matière : %s", ", ".join(ecarts))
     else:
         logger.info("Faits vérifiés : tout se retrouve dans la matière")
-    return {"faits_non_traces": ecarts}
+    creuses = figures_creuses(etat["script"], scenes_offertes=not wan2gp.absence())
+    for defaut in creuses:
+        logger.warning("Figure refusée : %s", defaut)
+    return {"faits_non_traces": ecarts, "figures_creuses": creuses}
 
 
 def noeud_verifier_mise_en_page(etat: EtatScript) -> EtatScript:
@@ -359,7 +425,7 @@ def route_apres_faits(etat: EtatScript) -> str:
     validation humaine. Un fait douteux se juge à la relecture ; bloquer la
     vidéo pour lui coûterait plus qu'il ne protège.
     """
-    if etat.get("faits_non_traces") and _budget_restant(etat):
+    if (etat.get("faits_non_traces") or etat.get("figures_creuses")) and _budget_restant(etat):
         return "rediger"
     return "verifier_mise_en_page"
 

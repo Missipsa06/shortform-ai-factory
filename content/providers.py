@@ -704,7 +704,16 @@ def call_llm_json(
             charge = json.loads(extract_json(brut))
         except (json.JSONDecodeError, TypeError):
             return False
-        return isinstance(charge, dict) and all(charge.get(c) for c in champs_requis)
+        if not (isinstance(charge, dict) and all(charge.get(c) for c in champs_requis)):
+            return False
+        # Une liste requise ne porte que des objets : NVIDIA a rendu le
+        # 27/10/2026 une slide réduite à une chaîne, et le contrôle des faits
+        # plantait dessus au lieu que la chaîne de repli passe au suivant.
+        return all(
+            isinstance(e, dict)
+            for c in champs_requis if isinstance(charge[c], list)
+            for e in charge[c]
+        )
     raw = call_llm(system, prompt, provider=provider, max_tokens=max_tokens,
                    trace=trace, valider=_conforme)
     candidate = extract_json(raw)

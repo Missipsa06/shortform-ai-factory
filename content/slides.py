@@ -603,7 +603,28 @@ def _fraction(valeur: object) -> "float | None":
     return None
 
 
-def _svg_stat(donnees: dict, w: int, h: int) -> str:
+def _instant_du_chiffre(valeur: object, mots: "list[dict] | None") -> "int | None":
+    """
+    Instant, en millisecondes, où la narration prononce les chiffres de `valeur`.
+
+    Comparaison sur les seuls chiffres : « 95% » dans la figure retrouve « 95 % »
+    ou « 95%, » dans le texte lu. Le karaoké affiche le texte du script, donc les
+    chiffres y sont écrits en chiffres. Rien trouvé : None, et l'appelant garde
+    son instant par défaut.
+    """
+    chiffres = re.sub(r"\D", "", str(valeur))
+    if not chiffres or not mots:
+        return None
+    for mot in mots:
+        if re.sub(r"\D", "", str(mot.get("mot", ""))) == chiffres:
+            return int(mot.get("debut", 0) * 1000)
+    return None
+
+
+def _svg_stat(
+    donnees: dict, w: int, h: int,
+    mots: "list[dict] | None" = None, duree_ms: int = 0,
+) -> str:
     """
     Un chiffre clé, cerclé d'un anneau ouvert.
 
@@ -620,11 +641,22 @@ def _svg_stat(donnees: dict, w: int, h: int) -> str:
     de place.
 
     Sans dénominateur, l'anneau reste entier : voir `_fraction`.
+
+    **Le remplissage tombe sur le chiffre prononcé.** Fixé à 260 ms, il se
+    jouait à l'entrée de la slide, quand la voix n'avait encore rien dit : le
+    geste qui montre la part précédait la part elle-même. Retrouvé dans la
+    datation des mots, il coïncide avec elle, et le chiffre marque l'instant par
+    un léger rebond. Sans datation, on garde 260 ms et aucun rebond.
     """
     brut = donnees.get("valeur", "?")
     valeur = _echapper(brut)
     description = _echapper(donnees.get("description", ""))
     part = _fraction(brut)
+    instant = _instant_du_chiffre(brut, mots)
+    rebond = (
+        "" if instant is None
+        else f' class="rebond anim" style="animation-delay:{instant}ms"'
+    )
 
     # La légende est placée sous l'anneau : sa hauteur est réservée AVANT de
     # calculer le rayon, sinon le texte sort du canevas et se retrouve tronqué.
@@ -673,12 +705,13 @@ def _svg_stat(donnees: dict, w: int, h: int) -> str:
                 f'  <circle class="remplit anim" cx="{cx}" cy="{cy}" r="{r}" fill="none" '
                 f'stroke="{ACCENT}" stroke-width="{TRAIT_ANNEAU}" stroke-linecap="round" '
                 f'transform="rotate(-90 {cx} {cy})" '
-                f'style="--arc:{arc:.1f};--tour:{tour:.1f};animation-delay:260ms"/>'
+                f'style="--arc:{arc:.1f};--tour:{tour:.1f};'
+                f'animation-delay:{260 if instant is None else instant}ms"/>'
             )
 
     return _svg(w, h, "\n".join(anneau) + f"""
   <text x="{cx}" y="{cy + corps // 3}" text-anchor="middle" fill="{ACCENT}"
-        font-size="{corps}" font-weight="700" font-family="{POLICE_SVG}">{valeur}</text>
+        font-size="{corps}" font-weight="700" font-family="{POLICE_SVG}"{rebond}>{valeur}</text>
   <text x="{cx}" y="{cy + r + 76}" text-anchor="middle" fill="{TEXTE_DOUX}"
         font-size="48" font-family="{POLICE_SVG}">{description}</text>""")
 
@@ -770,6 +803,12 @@ def _svg_comparaison(
         val = item.get("valeur", 0)
         couleur = ACCENT if (departage and val == max_val) else NEUTRE
         bar_w = max(int(w * (val / max_val)), 12)
+        # La barre pousse juste après l'apparition de son bloc : le libellé se
+        # lit d'abord, la longueur ensuite. Sans cadence, elle reste posée.
+        pousse = (
+            "" if instants[i] is None
+            else f' class="pousse anim" style="animation-delay:{instants[i] + 180}ms"'
+        )
         bloc = (
             f'  <text x="0" y="{y + 46}" fill="{TEXTE}" font-size="46" '
             f'font-weight="600" font-family="{POLICE_SVG}">{_echapper(item.get("label", ""))}</text>\n'
@@ -780,7 +819,7 @@ def _svg_comparaison(
             f'  <line x1="0" y1="{y + 82}" x2="{w}" y2="{y + 82}" stroke="{NEUTRE}" '
             f'stroke-width="1" opacity="0.35"/>\n'
             f'  <rect x="0" y="{y + 82 - barre_h // 2}" width="{bar_w}" height="{barre_h}" '
-            f'rx="{barre_h // 2}" fill="{couleur}"/>'
+            f'rx="{barre_h // 2}" fill="{couleur}"{pousse}/>'
         )
         parts.append(_parait(bloc, instants[i]))
     return _svg(w, h, "\n".join(parts))
@@ -1438,13 +1477,124 @@ def _svg_figure_source(donnees: dict, w: int, h: int) -> str:
     return _svg(w, h, "\n".join(parts))
 
 
-# Figures capables de se construire au fil de la narration. "stat" en est
-# exclue à dessein : un chiffre unique n'est pas une séquence, il n'y a rien à
-# cadencer. "figure_source" pour la même raison : une image n'a pas d'éléments
-# qui se posent l'un après l'autre.
+# ── Animations Lottie ─────────────────────────────────────────────────────────
+#
+# Animations vectorielles prêtes à l'emploi, au-delà de ce que le CSS dessine :
+# un pictogramme qui se construit, une petite scène. **Elles ne jouent jamais
+# seules** : `window.seek(t)` les place à l'instant voulu par `goToAndStop`, comme
+# il fige les animations CSS — le rendu reste déterministe image par image.
+#
+# La bibliothèque (lottie-web 5.12.2, version allégée, MIT) et les animations
+# vivent dans le dépôt, comme les polices : le rendu reste hors ligne et
+# identique en local et dans le conteneur. Les données sont injectées dans la
+# page plutôt que chargées : un `fetch` est refusé sur une page `file://`.
+
+LOTTIE_DIR = Path(__file__).parent / "assets" / "lottie"
+LOTTIE_JS = LOTTIE_DIR / "lottie_light.min.js"
+# Départ de l'animation : avec l'apparition de la zone graphique (`.graphic`).
+LOTTIE_DEPART_MS = 420
+
+
+def animations_disponibles() -> list[str]:
+    """Noms des animations embarquées, sans extension (le manifeste n'en est pas une)."""
+    return sorted(p.stem for p in LOTTIE_DIR.glob("*.json") if p.stem != "SOURCES")
+
+
+def catalogue_animations() -> dict[str, str]:
+    """
+    {nom: ce qu'elle évoque}, pour le prompt du LLM.
+
+    Lu dans le manifeste `SOURCES.json`, tenu par `content/lottie.py` : importer
+    une animation suffit à la proposer au modèle, rien à tenir à jour à la main.
+    Seules les animations présentes sur disque sont proposées.
+    """
+    manifeste = LOTTIE_DIR / "SOURCES.json"
+    if not manifeste.is_file():
+        return {}
+    entrees = json.loads(manifeste.read_text(encoding="utf-8"))
+    presentes = set(animations_disponibles())
+    return {nom: e.get("sens", "") for nom, e in sorted(entrees.items()) if nom in presentes}
+
+
+def _svg_animation(donnees: dict, w: int, h: int) -> str:
+    """
+    Une animation Lottie du dépôt, désignée par son nom.
+
+    Une animation inconnue rend une zone vide avec un WARNING, comme une figure
+    source introuvable : la slide se produit, le défaut se voit.
+    """
+    nom = str(donnees.get("nom", "")).strip()
+    chemin = LOTTIE_DIR / f"{nom}.json"
+    if not nom or not chemin.is_file():
+        logger.warning("Animation Lottie inconnue : '%s'. Disponibles : %s",
+                       nom, ", ".join(animations_disponibles()) or "aucune")
+        return ""
+    donnees_json = chemin.read_text(encoding="utf-8")
+    # Boucle ou non : décidé à l'import et noté au manifeste. Absente du
+    # manifeste (animation maison, comme `valide`), elle se joue une fois.
+    manifeste = LOTTIE_DIR / "SOURCES.json"
+    boucle = bool(manifeste.is_file() and json.loads(manifeste.read_text(
+        encoding="utf-8")).get(nom, {}).get("boucle"))
+    return (
+        f'<div class="lottie" style="width:{w}px;height:{h}px"></div>\n'
+        "<script>(window.__lotties = window.__lotties || []).push({"
+        "el: document.currentScript.previousElementSibling, "
+        f"donnees: {donnees_json}, depart: {LOTTIE_DEPART_MS}, "
+        f"boucle: {'true' if boucle else 'false'}}});</script>"
+    )
+
+
+# Étirement maximal d'un clip de scène. Au-delà, 24 images/s deviennent 12 et le
+# mouvement saccade ; la scène reste alors sur sa dernière image.
+ETIREMENT_MAX = 2.0
+
+
+def _svg_scene(donnees: dict, w: int, h: int,
+               mots: "list[dict] | None" = None, duree_ms: int = 0) -> str:
+    """
+    Scène illustrée animée : les images d'un clip, choisies une à une par seek().
+
+    Le clip (mascotte mise en scène puis animée par Wan2GP) est découpé en images
+    à l'avance. Une balise `<video>` ne convient pas : son `currentTime` n'est
+    pas exact à l'image près, et le calage sur la voix casserait. Ici `seek(t)`
+    affiche l'image de l'instant t et **attend son décodage** avant la capture.
+    Un clip plus court que la slide reste sur sa dernière image : une scène
+    raconte un événement, sa fin est son point d'arrivée.
+
+    **Le clip est étiré sur la narration** (au plus ×2) : joué à vitesse normale,
+    un clip de 5 s finissait à mi-slide, et l'événement montré — le Wi-Fi qui se
+    coupe — précédait de trois secondes la phrase qui le dit. Constaté sur le
+    prototype du 25/10/2026.
+    """
+    dossier = Path(str(donnees.get("images", "")))
+    images = sorted(dossier.glob("*.jpg")) if dossier.is_dir() else []
+    if not images:
+        logger.warning("Scène sans images : '%s'", dossier)
+        return ""
+    uris = [p.resolve().as_uri() for p in images]
+    fps = int(donnees.get("fps", 24))
+    clip_ms = len(images) * 1000 / fps
+    utile_ms = duree_ms - LOTTIE_DEPART_MS - SORTIE_MS
+    etirement = min(ETIREMENT_MAX, max(1.0, utile_ms / clip_ms)) if duree_ms else 1.0
+    # Taille relative et non `w` px : une <img> ne rétrécit pas sous sa largeur
+    # déclarée, et 922 px débordaient de la colonne — refusé par le contrôle de
+    # mise en page le 26/10/2026. `object-fit:contain` (.scene) garde le cadrage.
+    return (
+        f'<img class="scene" src="{uris[-1]}" style="width:100%;height:100%">\n'
+        "<script>(window.__scenes = window.__scenes || []).push({"
+        "el: document.currentScript.previousElementSibling, "
+        f"images: {json.dumps(uris)}, fps: {fps / etirement:.4f}, "
+        f"depart: {LOTTIE_DEPART_MS}}});</script>"
+    )
+
+
+# Figures qui reçoivent la datation des mots. "stat" n'est pas une séquence,
+# mais son anneau se remplit à l'instant où le chiffre est prononcé.
+# "figure_source" reste exclue : une image n'a pas d'éléments qui se posent
+# l'un après l'autre.
 _FIGURES_CADENCEES = {
-    "etapes", "couches", "comparaison", "liste", "neurones", "cycle", "matrice",
-    "frise", "embranchement", "venn",
+    "stat", "etapes", "couches", "comparaison", "liste", "neurones", "cycle",
+    "matrice", "frise", "embranchement", "venn", "scene", "terminal", "recap",
 }
 
 
@@ -1464,12 +1614,16 @@ def _graphic_svg(
         return ""
     gtype = graphique.get("type", "")
     donnees = graphique.get("donnees", {})
+    # Import local : figures_dev importe lui-même ses helpers depuis ce module.
+    from content.figures_dev import figure_recap, figure_terminal
+
     renderers = {
         "stat": _svg_stat, "etapes": _svg_etapes, "couches": _svg_couches,
         "comparaison": _svg_comparaison, "liste": _svg_liste, "neurones": _svg_neurones,
         "cycle": _svg_cycle, "matrice": _svg_matrice, "frise": _svg_frise,
         "embranchement": _svg_embranchement, "venn": _svg_venn,
-        "figure_source": _svg_figure_source,
+        "figure_source": _svg_figure_source, "animation": _svg_animation,
+        "scene": _svg_scene, "terminal": figure_terminal, "recap": figure_recap,
     }
     fn = renderers.get(gtype)
     if not fn:
@@ -1519,20 +1673,136 @@ def _repartir(h: int, n: int, hauteur_max: int, ratio_ecart: float) -> tuple[int
 
 DUREE_SLIDE_DEFAUT_MS = 6000
 
-# Appel à rester, affiché sur la slide titre.
-#
-# Remplace « Swipe pour en savoir plus », qui était contre-productif : sur TikTok
-# et Reels, balayer ne fait pas défiler la vidéo mais passe à la suivante. La
-# consigne invitait donc littéralement à quitter le contenu. Le taux de
-# complétion étant le principal signal de ces plateformes, l'appel doit retenir,
-# pas orienter vers un geste.
-RELANCE_TITRE = "⏳ Reste jusqu'à la fin"
+# Durée de la sortie de chaque slide. Courte : elle tombe dans le silence qui
+# sépare deux segments de narration, et plus longue elle effacerait le texte
+# pendant que la voix prononce encore le dernier mot.
+SORTIE_MS = 240
+# Écart entre l'entrée de deux mots d'un titre cinétique.
+PAS_TITRE_MS = 70
 
-# Bandeau affiché en haut de chaque slide. Le nom de la chaîne y remplace la
-# catégorie « IA & DATA SCIENCE » : le sujet est déjà porté par le titre et le
-# schéma, alors que rien ne rattachait la vidéo à son auteur. Sur un fil où les
-# vidéos circulent hors de tout contexte, c'est la seule signature persistante.
+
+# Mises en valeur d'un titre (`**…**`), en alternance : cyan, violet, cyan…
+# (« Ça marche **chez toi**, ça marche **chez eux** »).
+CLASSES_VALEUR = ("val-accent", "val-violet")
+
+
+def _texte_brut(texte: object) -> str:
+    """Texte sans les marques de mise en valeur `**`, pour tout autre affichage."""
+    return str(texte or "").replace("**", "")
+
+
+def _mots_valorises(texte: object) -> list[list[tuple[str, "str | None"]]]:
+    """
+    Découpe un titre en mots, chaque mot en bouts (texte, classe de mise en valeur).
+
+    Un mot peut mêler les deux (« **Docker**, ») et une mise en valeur couvrir
+    plusieurs mots (« **chez toi** ») : l'état bascule à chaque `**` rencontré.
+    La ponctuation détachée reste collée au mot précédent (`_mots_insecables`).
+    Un `**` orphelin met en valeur la fin du titre plutôt que de s'afficher.
+    """
+    dedans, rang, mots = False, -1, []
+    for mot in _mots_insecables(str(texte or "")):
+        bouts: list[tuple[str, "str | None"]] = []
+        for k, bout in enumerate(mot.split("**")):
+            if k:
+                dedans = not dedans
+                rang += dedans
+            if bout:
+                classe = CLASSES_VALEUR[rang % 2] if dedans else None
+                bouts.append((bout, classe))
+        if bouts:
+            mots.append(bouts)
+    return mots
+
+
+def _titre_cinetique(texte: str, depart_ms: int) -> str:
+    """
+    Titre dont les mots entrent l'un après l'autre, floutés, à partir de `depart_ms`.
+
+    Les segments `**…**` sont mis en valeur (cyan puis violet en alternance) ;
+    tout le texte est échappé.
+    """
+    from html import escape
+
+    def bout_html(texte_bout: str, classe: "str | None") -> str:
+        # Espace insécable : « vraiment ? » ne doit pas se couper dans son bloc.
+        html = escape(texte_bout).replace(" ", " ")
+        return f'<span class="{classe}">{html}</span>' if classe else html
+
+    return " ".join(
+        f'<span class="mot-titre anim" style="animation-delay:'
+        f'{depart_ms + i * PAS_TITRE_MS}ms">'
+        f'{"".join(bout_html(t, c) for t, c in mot)}</span>'
+        for i, mot in enumerate(_mots_valorises(texte))
+    )
+
+
+def _attributs_slide(duree_ms: int, sortie: bool = True) -> str:
+    """
+    Classes et réglages du conteneur `.slide`, qui porte la sortie.
+
+    Sans sortie, la slide s'enchaîne sur la suivante sans coupure visible
+    (accroche suivie de l'introduction, voir `_intro_slide_html`).
+    """
+    if not sortie:
+        return 'class="slide"'
+    return (f'class="slide anim sortie" style="--sortie:{SORTIE_MS}ms;'
+            f'animation-delay:{max(0, duree_ms - SORTIE_MS)}ms"')
+
+# Nom de la chaîne. Il ne s'affiche plus en bandeau sur chaque slide (il y
+# disputait la place au titre) mais signe la slide de fin, avec l'appel à s'abonner.
 MARQUE = "IA.MALINE"
+PSEUDO = "@" + MARQUE.lower()
+
+# Titre de la slide de fin quand le script n'en fournit pas (`titre_conclusion`).
+TITRE_CONCLUSION_DEFAUT = "Progresse en **IA**, une vidéo à la fois"
+
+# Mascotte détourée (fond transparent) de l'accroche et de la fin. `robot.jpg`,
+# à côté, reste la référence des scènes Wan2GP.
+MASCOTTE = (Path(__file__).resolve().parent.parent
+            / "media" / "assets" / "mascotte" / "robot_detoure.png")
+# Rapport largeur / hauteur du fichier (850 × 1310), pour centrer sans mesurer.
+MASCOTTE_RATIO = 850 / 1310
+
+# ── Habillage « dev » ─────────────────────────────────────────────────────────
+#
+# Le registre des vidéos tech qui marchent sur TikTok, dans les couleurs de la
+# chaîne : fond nuit à lueurs bleue et violette sous un nid d'abeille discret,
+# titres très gras à gauche avec mises en valeur cyan et violet, sous-titres en
+# capitales par morceaux de deux ou trois mots, barre de progression en haut.
+VIOLET = "#7B2FFF"
+# `VIOLET` n'offre que ~3:1 de contraste sur le fond nuit : assez pour une barre,
+# trop peu pour du texte. Les mots en valeur prennent sa version claire.
+VIOLET_CLAIR = "#A78BFA"
+GRIS_SOUS_TITRE = "#9AA4BC"
+
+# Sous-titres : morceaux courts, un seul visible à la fois. Bande au-dessus de
+# la zone réservée à l'interface de TikTok (1920 − ZONE_SURE_BAS = 1500).
+MORCEAU_MAX_MOTS = 3
+MORCEAU_MAX_CARS = 18
+SOUS_TITRES_HAUT = 1340
+SOUS_TITRES_H = 150
+SOUS_TITRE_CORPS = 66
+# Le flux (titre, figure) s'arrête au-dessus de la bande des sous-titres.
+FLUX_BAS = 1920 - SOUS_TITRES_HAUT + 20
+
+# Le corps d'un titre suit sa longueur, en paliers (caractères au plus → corps
+# en px) : le prompt demande des titres courts, mais un titre long d'un ancien
+# script garderait sinon ce corps et descendrait dans la
+# bande des sous-titres.
+CORPS_ACCROCHE = ((34, 102), (56, 88), (10**6, 76))
+CORPS_TITRE_SEUL = ((40, 120), (64, 100), (10**6, 84))
+MASCOTTE_H = 400
+# Canevas des schémas dans la zone élargie (952 × ~600 px, voir `.graphic`).
+CANEVAS_LARGE_H = 600
+# Début du bloc d'une slide sans figure, sous la zone sûre du haut.
+HAUT_BLOC_SEUL = 110
+
+
+def _corps_titre(texte: object, paliers: "tuple[tuple[int, int], ...]") -> int:
+    """Corps d'un titre selon sa longueur affichée (sans les `**`)."""
+    longueur = len(_texte_brut(texte))
+    return next(corps for plafond, corps in paliers if longueur <= plafond)
 
 # Désaturation appliquée aux photos de fond. Pas 1.0 : un gris parfait rendrait
 # les fonds mornes, alors qu'un reste de teinte laisse vivre l'image sous le
@@ -1574,24 +1844,53 @@ ZONE_SURE_HAUT = 240
 ZONE_SURE_BAS = 420
 # Colonne des boutons « j'aime », commentaire, partage et profil.
 ZONE_SURE_DROITE = 180
+# Ordonnée où commence cette colonne. Elle n'occupe que le bas de l'écran
+# (avatar, j'aime, commentaires, partage) : au-dessus, rien ne recouvre la
+# droite du cadre : réserver la colonne sur toute la hauteur réduisait le
+# terminal à 77 % de la largeur, et son texte d'autant.
+# Le texte reste dans la colonne étroite ; seule la figure s'élargit, et elle
+# s'arrête alors au-dessus de cette ordonnée.
+ZONE_SURE_DROITE_DEPUIS = 1040
+# Marge latérale du contenu, à gauche partout et à droite au-dessus de la colonne.
+MARGE = 64
 
 _ANIM_CSS = """
 .anim{animation-play-state:paused;animation-fill-mode:both}
 /* Longhands et non la forme raccourcie `animation:` : celle-ci réinitialiserait
    animation-play-state et animation-fill-mode posés par .anim, et l'animation
    échapperait au pilotage par seek(). */
-.fond{position:absolute;inset:-9%;z-index:0;
-      animation-name:kenburns;animation-duration:var(--duree);
+/* Dérive lente du fond : un aplat immobile paraît figé. Discrète, le nid
+   d'abeille ne doit pas attirer l'œil. */
+.fond{position:absolute;inset:-6%;z-index:0;
+      animation-name:derive;animation-duration:var(--duree);
       animation-timing-function:linear}
 .slide{position:relative;z-index:1}
-@keyframes kenburns{
+@keyframes derive{
   from{transform:scale(1.00) translate(0,0)}
-  to  {transform:scale(1.14) translate(-2.5%,-1.8%)}
+  to  {transform:scale(1.05) translate(-1.2%,-0.9%)}
 }
-@keyframes apparait{
-  from{opacity:0;transform:translateY(34px)}
-  to  {opacity:1;transform:translateY(0)}
+/* Entrée floutée : le flou se résorbe pendant que le mot apparaît. */
+@keyframes floute{
+  from{opacity:0;filter:blur(12px);transform:translateY(14px)}
+  to  {opacity:1;filter:blur(0);transform:translateY(0)}
 }
+.entre{opacity:0;animation-name:floute;animation-duration:700ms;
+       animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+/* Flottement de la mascotte, rejoué tant que la slide dure. */
+@keyframes flotte{from{transform:translateY(0)} to{transform:translateY(-16px)}}
+.flotte{animation-name:flotte;animation-duration:2400ms;
+        animation-iteration-count:infinite;animation-direction:alternate;
+        animation-timing-function:ease-in-out}
+/* Barre de progression : ses keyframes, propres à chaque slide, sont dans la
+   page (début et fin de la slide rapportés à la durée totale). */
+.progres{position:absolute;top:0;left:0;width:100%;height:6px;z-index:2;
+         transform-origin:left center;animation-name:progresser;
+         animation-duration:var(--duree);animation-timing-function:linear}
+/* Sous-titres : chaque morceau et chaque mot porte sa propre fenêtre de
+   visibilité, en paliers (`step-end`) sur toute la durée de la slide. Le
+   remplissage `both` les garde toujours actives : une animation terminée sans
+   remplissage disparaîtrait de getAnimations() et seek() ne la reverrait plus. */
+.morceau,.mot-st{animation-duration:var(--duree);animation-timing-function:step-end}
 @keyframes surgit{
   from{opacity:0;transform:scale(.94)}
   to  {opacity:1;transform:scale(1)}
@@ -1617,50 +1916,139 @@ _ANIM_CSS = """
          animation-name:remplir;animation-duration:900ms;
          animation-timing-function:cubic-bezier(.2,.8,.2,1)}
 @keyframes remplir{to{stroke-dashoffset:0}}
-/* Karaoké : chaque mot s'allume au moment où il est prononcé et le reste.
-   Deux animations simultanées — l'éclaircissement, définitif, et une frappe
-   colorée brève sur le mot en cours. */
-/* La marge intérieure absorbe l'agrandissement du mot en cours : sans elle, il
-   déborde sur l'espace voisin et les deux mots se touchent. */
-.mot{opacity:.42;display:inline-block;padding:0 .05em;
-     animation-name:allume,frappe;
-     animation-duration:130ms,300ms;
-     animation-timing-function:linear,ease-out}
-@keyframes allume{from{opacity:.42} to{opacity:1}}
-@keyframes frappe{
-  0%  {transform:scale(1);   color:var(--couleur-mot)}
-  35% {transform:scale(1.07);color:#00D4FF}
-  100%{transform:scale(1);   color:var(--couleur-mot)}
-}
+/* La barre de `comparaison` pousse depuis son origine quand son bloc paraît :
+   c'est sa longueur qui porte la valeur, la voir croître la fait lire. */
+.pousse{transform-box:fill-box;transform-origin:left center;
+        animation-name:pousser;animation-duration:700ms;
+        animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+@keyframes pousser{from{transform:scaleX(0)} to{transform:scaleX(1)}}
+/* Le chiffre de `stat` marque le moment où la voix le prononce. */
+.rebond{transform-box:fill-box;transform-origin:center;
+        animation-name:rebondir;animation-duration:600ms;
+        animation-timing-function:ease-out}
+@keyframes rebondir{0%{transform:scale(1)} 35%{transform:scale(1.12)} 100%{transform:scale(1)}}
+/* Titre cinétique : les mots entrent l'un après l'autre au lieu d'un bloc. */
+.mot-titre{display:inline-block;opacity:0;
+           animation-name:floute;animation-duration:700ms;
+           animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+/* Sortie de slide : le contenu s'efface en remontant sur ses dernières
+   millisecondes, et l'entrée de la slide suivante prend le relais. Le fond
+   reste : la coupure se fait sous le texte, pas sur toute l'image. */
+.sortie{animation-name:sortir;animation-duration:var(--sortie);
+        animation-timing-function:ease-in}
+@keyframes sortir{to{opacity:0;transform:translateY(-36px)}}
+/* Scène animée : bords fondus dans le fond de la slide, pour qu'elle n'y
+   découpe pas un carré. `contain` : la scène n'est jamais recadrée. */
+.scene{object-fit:contain;
+       -webkit-mask-image:radial-gradient(closest-side,#000 72%,transparent 100%);
+       mask-image:radial-gradient(closest-side,#000 72%,transparent 100%)}
 """
 
 
-def _mots_html(texte: str, mots: "list[dict] | None", decalage_ms: int = 0) -> str:
+def _morceaux(mots: list[str]) -> list[list[int]]:
     """
-    Rend un texte en mots animés, ou tel quel si aucun horodatage n'est fourni.
-
-    Args:
-        texte:        Texte d'origine, utilisé en repli
-        mots:         [{'mot', 'debut', 'fin'}] issus de media/align.py
-        decalage_ms:  Décalage à retrancher (le segment audio peut commencer
-                      avant la portion de texte concernée)
+    Groupe les mots en morceaux de sous-titres : 3 mots et MORCEAU_MAX_CARS
+    caractères au plus, coupés après toute ponctuation.
 
     Returns:
-        Fragment HTML
+        Indices des mots de chaque morceau, dans l'ordre
+    """
+    groupes: list[list[int]] = []
+    courant: list[int] = []
+    for i, mot in enumerate(mots):
+        texte = " ".join(mots[j] for j in courant + [i])
+        if courant and (len(courant) >= MORCEAU_MAX_MOTS or len(texte) > MORCEAU_MAX_CARS):
+            groupes.append(courant)
+            courant = []
+        courant.append(i)
+        # « 2. Télécharger » : un numéro de liste ouvre le morceau, il ne le clôt pas.
+        if mot[-1:] in ".,;:!?…" and not re.fullmatch(r"\d+\.", mot):
+            groupes.append(courant)
+            courant = []
+    if courant:
+        groupes.append(courant)
+    return groupes
+
+
+def _texte_prononce(texte: object) -> str:
+    """Texte tel qu'envoyé au TTS : sans `**`, emoji, hashtag ni URL."""
+    from media.tts import _clean_text
+
+    return _clean_text(_texte_brut(texte))
+
+
+def _datation_sous_titres(
+    texte: str, mots: "list[dict] | None", duree_ms: int, prefixe: str = "",
+) -> list[tuple[str, int]]:
+    """
+    Mots à sous-titrer et instant de début de chacun, en millisecondes.
+
+    Avec datation (media/align.py), les instants sont ceux de la voix. Le
+    `prefixe` couvre les mots prononcés mais retirés de la datation — le titre
+    d'une slide de contenu, voir `mots_par_slide` — répartis avant le premier
+    mot daté. Sans datation, le texte est réparti uniformément jusqu'à la sortie.
+    """
+    if mots:
+        premier = max(0, int(mots[0]["debut"] * 1000))
+        tete = prefixe.split()
+        pas = premier / len(tete) if tete else 0
+        return ([(m, int(i * pas)) for i, m in enumerate(tete)]
+                + [(m["mot"], max(0, int(m["debut"] * 1000))) for m in mots])
+    tous = f"{prefixe} {texte}".split()
+    if not tous:
+        return []
+    pas = max(1, duree_ms - SORTIE_MS) / len(tous)
+    return [(m, int(i * pas)) for i, m in enumerate(tous)]
+
+
+def _fenetre(nom: str, prop: str, hors: str, dans: str,
+             debut_ms: int, fin_ms: int, duree_ms: int) -> str:
+    """
+    Keyframes en paliers : `prop` vaut `dans` sur [debut, fin[ et `hors` ailleurs.
+
+    Jouées en `step-end` sur toute la durée de la slide, donc fixées par seek()
+    à n'importe quel instant, dans les deux sens.
+    """
+    a = 100 * min(max(debut_ms, 0), duree_ms) / duree_ms
+    b = 100 * min(max(fin_ms, debut_ms), duree_ms) / duree_ms
+    return (f"@keyframes {nom}{{0%{{{prop}:{hors}}}{a:.3f}%{{{prop}:{dans}}}"
+            f"{b:.3f}%{{{prop}:{hors}}}100%{{{prop}:{hors}}}}}")
+
+
+def _sous_titres_html(datation: list[tuple[str, int]], duree_ms: int) -> str:
+    """
+    Sous-titres en morceaux de 2–3 mots, un seul visible à la fois, le mot en
+    cours de prononciation en cyan. Remplace le paragraphe karaoké.
+
+    Le premier morceau paraît dès l'instant 0, le dernier reste jusqu'à la fin.
     """
     from html import escape
 
-    if not mots:
-        return escape(texte)
-
-    spans = []
-    for m in mots:
-        depart = max(0, int(m["debut"] * 1000) - decalage_ms)
-        spans.append(
-            f'<span class="mot anim" style="animation-delay:{depart}ms,{depart}ms">'
-            f'{escape(m["mot"])}</span>'
-        )
-    return " ".join(spans)
+    if not datation:
+        return ""
+    duree_ms = max(duree_ms, 1)
+    groupes = _morceaux([m for m, _ in datation])
+    largeur = 1080 - 64 - ZONE_SURE_DROITE
+    keyframes, blocs = [], []
+    for g, idx in enumerate(groupes):
+        debut = 0 if g == 0 else datation[idx[0]][1]
+        fin = datation[groupes[g + 1][0]][1] if g + 1 < len(groupes) else duree_ms
+        keyframes.append(_fenetre(f"st{g}", "opacity", "0", "1", debut, fin, duree_ms))
+        texte = " ".join(datation[i][0] for i in idx)
+        # Corps réduit pour un morceau long : un mot seul ne se coupe pas.
+        corps = max(36, min(SOUS_TITRE_CORPS, int(largeur / (0.74 * max(len(texte), 1)))))
+        spans = []
+        for k, i in enumerate(idx):
+            mot_debut = debut if k == 0 else datation[i][1]
+            mot_fin = datation[idx[k + 1]][1] if k + 1 < len(idx) else fin
+            keyframes.append(_fenetre(f"sm{i}", "color", "#FFFFFF", ACCENT,
+                                      mot_debut, mot_fin, duree_ms))
+            spans.append(f'<span class="mot-st anim" style="animation-name:sm{i}">'
+                         f'{escape(datation[i][0])}</span>')
+        blocs.append(f'<div class="morceau anim" style="animation-name:st{g};'
+                     f'font-size:{corps}px">{" ".join(spans)}</div>')
+    return (f'<div class="soustitres"><style>{"".join(keyframes)}</style>'
+            f'{"".join(blocs)}</div>')
 
 
 def _seek_js(duree_ms: int) -> str:
@@ -1668,11 +2056,36 @@ def _seek_js(duree_ms: int) -> str:
     return f"""
 <script>
   const DUREE_MS = {duree_ms};
+  // Animations Lottie de la page, jamais jouées seules : seek() les place.
+  const lotties = (window.__lotties || []).map(l => ({{
+    anim: lottie.loadAnimation({{container: l.el, renderer: 'svg', loop: false,
+                                autoplay: false, animationData: l.donnees}}),
+    depart: l.depart, boucle: l.boucle,
+  }}));
   window.seek = (t) => {{
     document.getAnimations().forEach(a => {{ a.pause(); a.currentTime = t; }});
+    lotties.forEach(l => {{
+      // Une boucle rejoue tant que la slide dure ; sinon l'animation reste
+      // posée sur sa dernière image.
+      const duree = l.anim.getDuration(false) * 1000;
+      const x = Math.max(0, t - l.depart);
+      l.anim.goToAndStop(l.boucle ? x % duree : Math.min(duree - 1, x), false);
+    }});
+    // Scènes animées : l'image de l'instant t, et une promesse qui ne se
+    // résout qu'une fois décodée — Playwright l'attend avant la capture.
+    return Promise.all((window.__scenes || []).map(s => {{
+      const i = Math.min(s.images.length - 1,
+                         Math.max(0, Math.floor((t - s.depart) * s.fps / 1000)));
+      if (s.el.dataset.i === String(i)) return Promise.resolve();
+      s.el.dataset.i = String(i);
+      s.el.src = s.images[i];
+      return s.el.decode().catch(() => {{}});
+    }}));
   }};
-  // État final par défaut : préserve le comportement de l'export PNG.
-  window.seek(DUREE_MS);
+  // État par défaut : le dernier instant **avant la sortie**, où tout est posé.
+  // L'aperçu PNG et le contrôle de mise en page le lisent ; le vrai dernier
+  // instant montrerait une slide déjà effacée.
+  window.seek(Math.max(0, DUREE_MS - {SORTIE_MS}));
 </script>"""
 
 
@@ -1727,198 +2140,310 @@ def _bg_style(image_path: "Path | None") -> str:
     )
 
 
+def _fond_css() -> str:
+    """
+    Fond de l'habillage, aux couleurs de la chaîne : nuit #0D0D1A → #141428,
+    lueur bleue en haut à gauche, violette en bas à droite, sous un nid
+    d'abeille.
+
+    Le motif a été choisi sur planche contre une grille, une trame de points et
+    des ondes (27/10/2026) : les points disparaissaient à l'échelle d'un
+    téléphone, les ondes se lisaient comme un défaut d'image. Opacité 0,13 :
+    à 0,10 il s'effaçait dans le haut, à 0,16 il disputait l'attention au texte.
+    """
+    hexagones = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                 "width='56' height='100'%3E%3Cpath d='M28 66L0 50V16L28 0l28 16v34L28 "
+                 "66v34' fill='none' stroke='rgba(255,255,255,0.13)' "
+                 "stroke-width='1.5'/%3E%3C/svg%3E")
+    return (
+        f"background-image:"
+        f"url(\"{hexagones}\"),"
+        f"radial-gradient(circle at 28% 22%,rgba(27,58,107,0.95) 0%,transparent 55%),"
+        f"radial-gradient(circle at 78% 72%,rgba(61,26,92,0.95) 0%,transparent 52%),"
+        f"linear-gradient(160deg,#0D0D1A 0%,#141428 100%);"
+        f"background-size:56px 100px,100% 100%,100% 100%,100% 100%"
+    )
+
+
+_HABILLAGE_CSS = f"""
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{width:1080px;height:1920px;background:#0D0D1A;overflow:hidden;
+     font-family:'Lecture',sans-serif;color:#fff}}
+.fond{{{_fond_css()}}}
+.progres{{background:linear-gradient(90deg,{ACCENT},{VIOLET})}}
+/* Le flux (titres, figure) s'arrête au-dessus de la bande des sous-titres. */
+.slide{{width:100%;height:100%;
+       padding:{ZONE_SURE_HAUT}px {ZONE_SURE_DROITE}px {FLUX_BAS}px 64px;
+       display:flex;flex-direction:column}}
+.titre{{font-family:'Titrage',sans-serif;font-weight:700;color:#fff;
+       line-height:1.08;letter-spacing:-1.5px;
+       /* Space Grotesk plafonne à 700 : un contour fin l'épaissit pour qu'un
+          titre se lise d'un coup d'œil en défilement. */
+       -webkit-text-stroke:1.4px currentColor}}
+.titre.accroche{{letter-spacing:-2.5px;margin-top:44px}}
+.titre.seul{{letter-spacing:-2.5px;line-height:1.02}}
+.titre.contenu{{font-size:72px;margin-top:90px}}
+.val-accent{{color:{ACCENT};text-shadow:0 0 26px rgba(0,212,255,0.40)}}
+.val-violet{{color:{VIOLET_CLAIR};text-shadow:0 0 26px rgba(167,139,250,0.40)}}
+.surtitre{{font-size:26px;font-weight:700;color:{ACCENT};letter-spacing:7px;
+          text-transform:uppercase;margin-bottom:30px}}
+.surtitre::after{{content:"";display:block;width:52px;height:4px;margin-top:14px;
+                 border-radius:2px;background:{ACCENT}}}
+.sous-titre{{font-size:46px;font-weight:500;color:{GRIS_SOUS_TITRE};line-height:1.4;
+            margin-top:30px}}
+.mascotte-boite{{align-self:center;position:relative;
+                left:{(ZONE_SURE_DROITE - 64) // 2}px}}
+.mascotte{{display:block;width:auto;
+          filter:drop-shadow(0 22px 34px rgba(0,0,0,0.55))
+                 drop-shadow(0 0 40px rgba(0,212,255,0.18))}}
+/* Élastique : la figure prend la place restante sous le titre. Elle s'élargit
+   jusqu'à la marge droite (au-dessus de la colonne des boutons, rien ne la
+   recouvre) et, en contrepartie, le flux d'une slide à figure s'arrête à
+   ZONE_SURE_DROITE_DEPUIS. Borner la hauteur plutôt que garder la largeur
+   réduite : un terminal ne vit que de sa largeur, c'est elle qui fait la
+   taille de son texte. */
+.slide:has(> .graphic){{padding-bottom:{1920 - ZONE_SURE_DROITE_DEPUIS}px}}
+.graphic{{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+         margin-right:{MARGE - ZONE_SURE_DROITE}px;padding:28px 0;opacity:0;
+         animation-name:surgit;animation-duration:800ms;animation-delay:420ms;
+         animation-timing-function:cubic-bezier(.2,.8,.2,1)}}
+.graphic svg{{max-height:100%;width:auto}}
+.soustitres{{position:absolute;left:64px;right:{ZONE_SURE_DROITE}px;
+            top:{SOUS_TITRES_HAUT}px;height:{SOUS_TITRES_H}px}}
+.morceau{{position:absolute;inset:0;display:flex;align-items:center;
+         justify-content:center;flex-wrap:wrap;gap:0 .28em;white-space:nowrap;
+         font-weight:800;text-transform:uppercase;letter-spacing:.5px;
+         text-shadow:0 4px 18px rgba(0,0,0,0.85)}}
+.filet{{height:1px;margin-top:70px;background:linear-gradient(90deg,rgba(0,212,255,0.05),rgba(0,212,255,0.32),rgba(0,212,255,0.05))}}
+.signature{{display:flex;align-items:center;gap:22px;margin-top:48px;
+           font-family:'Titrage',sans-serif;font-size:56px;font-weight:700}}
+.signature small{{font-size:32px;color:{GRIS_SOUS_TITRE};font-weight:500}}
+{_ANIM_CSS}
+"""
+
+
+def _progres_html(progres: "tuple[int, int] | None", duree_ms: int) -> str:
+    """
+    Barre de progression globale : sa largeur suit l'instant dans la vidéo,
+    pas dans la slide. Absente sans durées (aperçu PNG).
+
+    Args:
+        progres: (début de la slide, durée totale de la vidéo), en ms
+    """
+    if not progres or progres[1] <= 0:
+        return ""
+    debut, total = progres
+    p0 = min(1.0, debut / total)
+    p1 = min(1.0, (debut + duree_ms) / total)
+    return (f"<style>@keyframes progresser{{from{{transform:scaleX({p0:.5f})}}"
+            f"to{{transform:scaleX({p1:.5f})}}}}</style>"
+            f'<div class="progres anim"></div>')
+
+
+def _mascotte_html(hauteur: int, delai_ms: int = 0, flottement_ms: int = 0) -> str:
+    """
+    Mascotte détourée, entrée floutée puis léger flottement piloté par seek().
+
+    Args:
+        delai_ms:      Instant de l'entrée
+        flottement_ms: Phase du flottement à l'instant 0, pour reprendre le
+                       mouvement là où la slide précédente l'a laissé
+    """
+    from html import escape
+
+    if not MASCOTTE.exists():
+        logger.warning("Mascotte absente (%s) : slide sans mascotte", MASCOTTE)
+        return ""
+    return (f'<div class="mascotte-boite entre anim" style="animation-delay:{delai_ms}ms">'
+            f'<img class="mascotte flotte anim" style="height:{hauteur}px;'
+            f'animation-delay:{-flottement_ms}ms" '
+            f'src="{escape(MASCOTTE.as_uri())}" alt=""></div>')
+
+
+def _page(corps: str, duree_ms: int, mots: "list[dict] | None",
+          texte_lu: str, prefixe_lu: str = "",
+          progres: "tuple[int, int] | None" = None,
+          enchainement: "tuple[int, int] | None" = None) -> str:
+    """
+    Document complet d'une slide : fond, barre de progression, contenu qui
+    porte la sortie, sous-titres et pilotage par seek().
+
+    Args:
+        corps:      Contenu de `.slide` (titres, figure…)
+        texte_lu:   Narration de la slide, sous-titrée en repli sans datation
+        prefixe_lu: Mots prononcés avant ceux datés (titre d'une slide de contenu)
+        progres:    (début de la slide, durée totale) pour la barre globale
+        enchainement: (instant de la slide dans une séquence, durée de la
+                      séquence) : la dérive du fond court sur toute la séquence
+                      et seule la dernière slide de la séquence sort
+    """
+    fond = ""
+    sortie = True
+    if enchainement:
+        debut, total = enchainement
+        fond = f' style="animation-duration:{total}ms;animation-delay:{-debut}ms"'
+        sortie = debut + duree_ms >= total
+    lottie_js = (
+        f'<script src="{LOTTIE_JS.resolve().as_uri()}"></script>'
+        if 'class="lottie"' in corps else ""
+    )
+    sous_titres = _sous_titres_html(
+        _datation_sous_titres(_texte_prononce(texte_lu), mots, duree_ms,
+                              _texte_prononce(prefixe_lu)),
+        duree_ms,
+    )
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">{lottie_js}
+<style>
+{_POLICES_CSS}
+{_HABILLAGE_CSS}
+body{{--duree:{duree_ms}ms}}
+</style></head>
+<body>
+<div class="fond anim"{fond}></div>
+{_progres_html(progres, duree_ms)}
+<div {_attributs_slide(duree_ms, sortie)}>
+{corps}
+{sous_titres}
+</div>{_seek_js(duree_ms)}
+</body></html>"""
+
+
+def _entree(classe: str, texte: str, delai_ms: int) -> str:
+    """Bloc de texte échappé à entrée floutée ; rien si le texte est vide."""
+    from html import escape
+
+    if not texte:
+        return ""
+    return (f'<div class="{classe} entre anim" style="animation-delay:{delai_ms}ms">'
+            f'{escape(_texte_brut(texte))}</div>')
+
+
 def _slide_html(content: dict, total: int, bg: str = "#0D0D1A",
                 image_path: "Path | None" = None,
                 duree_ms: int = DUREE_SLIDE_DEFAUT_MS,
-                mots: "list[dict] | None" = None) -> str:
-    numero = content.get("numero", "")
-    visuel = content.get("visuel", "")
+                mots: "list[dict] | None" = None,
+                progres: "tuple[int, int] | None" = None) -> str:
+    """
+    Slide de contenu : surtitre et titre en haut, figure au milieu, sous-titres.
+
+    Le paragraphe lu n'est plus affiché : les sous-titres le portent. Sans
+    figure, le titre grandit et se centre, avec son sous-titre gris.
+    `total`, `bg` et `image_path` restent acceptés pour les appelants existants ;
+    ce rendu n'affiche plus d'illustration de fond.
+    """
     titre = content.get("titre", "")
-    texte = _mots_html(content.get("contenu", ""), mots)
-    graphique = content.get("graphique")
-    # Les mêmes horodatages servent au karaoké du texte et à la construction de
-    # la figure : un seul calage, deux usages.
-    svg = _graphic_svg(graphique, w=970, h=CANEVAS_H, mots=mots, duree_ms=duree_ms)
-    body_bg = _bg_style(image_path)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-{_POLICES_CSS}
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{width:1080px;height:1920px;background:#0D0D1A;overflow:hidden;
-     font-family:'Lecture',sans-serif;--duree:{duree_ms}ms}}
-.fond{{{body_bg}}}
-/* La colonne occupe toute la hauteur utile, hors bande réservée à l'interface. */
-.slide{{width:100%;height:100%;padding:{ZONE_SURE_HAUT}px {ZONE_SURE_DROITE}px {ZONE_SURE_BAS}px 64px;
-       display:flex;flex-direction:column}}
-.entete{{display:flex;align-items:baseline;gap:22px;
-        animation:apparait 600ms cubic-bezier(.2,.8,.2,1)}}
-.badge{{font-size:24px;color:#00D4FF;font-weight:700;letter-spacing:3px}}
-.compteur{{margin-left:auto;font-size:30px;color:#6E7A99;font-weight:700}}
-.titre{{font-family:'Titrage',sans-serif;font-size:72px;font-weight:700;color:#fff;
-       line-height:1.06;letter-spacing:-1.5px;margin-top:26px;
-       text-shadow:0 2px 14px rgba(0,0,0,0.75);
-       animation:apparait 700ms 180ms cubic-bezier(.2,.8,.2,1)}}
-/* Élastique : le schéma prend la place restante au lieu d'un bloc figé qui
-   laissait un trou au milieu de la slide. */
-.graphic{{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
-         padding:40px 0;
-         animation:surgit 800ms 420ms cubic-bezier(.2,.8,.2,1)}}
-.graphic svg{{max-height:100%;width:auto}}
-/* Le texte lu s'ancre juste au-dessus de la zone réservée : c'est là que l'œil
-   se pose sur un format vertical. */
-.content{{font-size:44px;color:#E0E8F0;line-height:1.4;font-weight:600;
-         text-shadow:0 2px 10px rgba(0,0,0,0.9);--couleur-mot:#E0E8F0;
-         animation:apparait 700ms 640ms cubic-bezier(.2,.8,.2,1)}}
-{_ANIM_CSS}
-</style></head>
-<body>
-<div class="fond anim"></div>
-<div class="slide">
-<div class="entete anim">
-  <span class="badge">{MARQUE}</span>
-  <span class="compteur">{visuel} {numero}/{total}</span>
-</div>
-<div class="titre anim">{titre}</div>
-<div class="graphic anim">{svg}</div>
-<div class="content anim">{texte}</div>
-</div>{_seek_js(duree_ms)}
-</body></html>"""
+    # Les mêmes horodatages servent aux sous-titres et à la construction de la
+    # figure : un seul calage, deux usages. Le canevas suit la zone élargie,
+    # plus large que haute (voir `.graphic`).
+    svg = _graphic_svg(content.get("graphique"), w=970, h=CANEVAS_LARGE_H,
+                       mots=mots, duree_ms=duree_ms)
+    if svg:
+        # Titre puis figure, rien entre : le LLM met surtitre et sous-titre
+        # partout malgré la consigne, et ils repoussaient la figure vers le bas.
+        corps = (f'<div class="titre contenu">{_titre_cinetique(titre, 180)}</div>'
+                 f'<div class="graphic anim">{svg}</div>')
+    else:
+        # Sans figure, le bloc de titre occupe le haut : centré, il laissait
+        # un vide au-dessus qui faisait paraître la slide creuse.
+        corps = (
+            f'<div style="margin-top:{HAUT_BLOC_SEUL}px">'
+            + _entree("surtitre", content.get("surtitre", ""), 80)
+            + f'<div class="titre seul" style="font-size:'
+              f'{_corps_titre(titre, CORPS_TITRE_SEUL)}px">{_titre_cinetique(titre, 180)}</div>'
+            + _entree("sous-titre", content.get("sous_titre", ""), 520)
+            + '<div class="filet entre anim" style="animation-delay:800ms"></div></div>'
+        )
+    return _page(corps, duree_ms, mots, content.get("contenu", ""),
+                 prefixe_lu=titre, progres=progres)
+
+
+# Délai qui place une entrée bien avant l'instant 0 : elle est déjà jouée,
+# l'élément paraît posé dès la première image.
+DEJA_ENTRE_MS = -100_000
+
+
+def _accroche_corps(script: dict, deja_entre: bool = False, flottement_ms: int = 0) -> str:
+    """
+    Contenu de l'accroche : mascotte, titre de la vidéo, sous-titre gris.
+
+    Args:
+        deja_entre:    Éléments posés dès l'instant 0, sans animation d'entrée
+        flottement_ms: Phase du flottement de la mascotte à l'instant 0
+    """
+    titre = script.get("titre_video", "")
+    decale = DEJA_ENTRE_MS if deja_entre else 0
+    return (
+        f'<div style="margin-top:100px"></div>'
+        f'{_mascotte_html(MASCOTTE_H, decale, flottement_ms)}'
+        f'<div class="titre accroche" style="font-size:{_corps_titre(titre, CORPS_ACCROCHE)}px">'
+        f'{_titre_cinetique(titre, 250 + decale)}</div>'
+        + _entree("sous-titre", script.get("sous_titre_video", ""), 700 + decale)
+    )
 
 
 def _title_slide_html(script: dict, bg: str = "#0D0D1A",
                       image_path: "Path | None" = None,
                       duree_ms: int = DUREE_SLIDE_DEFAUT_MS,
-                      mots: "list[dict] | None" = None) -> str:
-    titre = script.get("titre_video", "")
-    hook = _mots_html(script.get("hook", ""), mots)
-    body_bg = _bg_style(image_path)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-{_POLICES_CSS}
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{width:1080px;height:1920px;background:#0D0D1A;overflow:hidden;
-     font-family:'Lecture',sans-serif;--duree:{duree_ms}ms}}
-.fond{{{body_bg}}}
-.slide{{width:100%;height:100%;padding:{ZONE_SURE_HAUT}px {ZONE_SURE_DROITE}px {ZONE_SURE_BAS}px 64px;
-       display:flex;flex-direction:column}}
-.badge{{font-size:26px;color:#00D4FF;font-weight:700;letter-spacing:4px;
-       animation:apparait 600ms cubic-bezier(.2,.8,.2,1)}}
-/* Le titre occupe le haut, le hook s'installe au-dessus de la zone réservée :
-   le regard traverse toute l'image au lieu de rester coincé en haut. */
-.titre{{font-family:'Titrage',sans-serif;font-size:96px;font-weight:700;color:#fff;
-       line-height:1.02;letter-spacing:-2.5px;margin-top:56px;
-       text-shadow:0 3px 18px rgba(0,0,0,0.85);
-       animation:apparait 800ms 150ms cubic-bezier(.2,.8,.2,1)}}
-.hook{{font-size:50px;color:#E0E8F0;line-height:1.36;font-weight:600;margin-top:auto;
-      text-shadow:0 2px 12px rgba(0,0,0,0.9);--couleur-mot:#E0E8F0;
-      animation:apparait 800ms 500ms cubic-bezier(.2,.8,.2,1)}}
-.relance{{font-size:30px;color:#00D4FF;font-weight:700;margin-top:44px;
-       animation:apparait 600ms 1000ms cubic-bezier(.2,.8,.2,1)}}
-{_ANIM_CSS}
-</style></head>
-<body>
-<div class="fond anim"></div>
-<div class="slide">
-<div class="badge anim">{MARQUE}</div>
-<div class="titre anim">{titre}</div>
-<div class="hook anim">{hook}</div>
-<div class="relance anim">{RELANCE_TITRE}</div>
-</div>{_seek_js(duree_ms)}
-</body></html>"""
+                      mots: "list[dict] | None" = None,
+                      progres: "tuple[int, int] | None" = None,
+                      enchainement: "tuple[int, int] | None" = None) -> str:
+    """
+    Accroche : mascotte centrée, titre de la vidéo, sous-titre gris.
+
+    Args:
+        enchainement: (instant de la slide dans la séquence accroche +
+                      introduction, durée de la séquence), en ms. Fourni quand
+                      une introduction suit : l'accroche ne sort pas, elle se
+                      prolonge dans l'introduction.
+    """
+    return _page(_accroche_corps(script), duree_ms, mots, script.get("hook", ""),
+                 progres=progres, enchainement=enchainement)
 
 
 def _intro_slide_html(script: dict, bg: str = "#0D0D1A",
                       image_path: "Path | None" = None,
                       duree_ms: int = DUREE_SLIDE_DEFAUT_MS,
-                      mots: "list[dict] | None" = None) -> str:
+                      mots: "list[dict] | None" = None,
+                      progres: "tuple[int, int] | None" = None,
+                      enchainement: "tuple[int, int] | None" = None) -> str:
     """
-    Slide d'accueil : salutation et annonce du sujet, avant l'accroche.
+    Introduction : à l'écran, la suite exacte de l'accroche.
 
-    Volontairement distincte de la slide de titre : ici le sujet est présenté
-    posément, là l'accroche interpelle. Deux temps, deux compositions.
+    Un écran « Au programme » qui répétait le titre sur un fond vide était un
+    temps mort, juste au moment où le spectateur décide de rester. La slide
+    reprend donc l'accroche déjà posée — sans entrée, mascotte et fond à
+    la phase où l'accroche les a laissés — et seuls les sous-titres défilent.
     """
-    titre = script.get("titre_video", "")
-    intro = _mots_html(script.get("introduction", ""), mots)
-    body_bg = _bg_style(image_path)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-{_POLICES_CSS}
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{width:1080px;height:1920px;background:#0D0D1A;overflow:hidden;
-     font-family:'Lecture',sans-serif;--duree:{duree_ms}ms}}
-.fond{{{body_bg}}}
-.slide{{width:100%;height:100%;padding:{ZONE_SURE_HAUT}px {ZONE_SURE_DROITE}px {ZONE_SURE_BAS}px 64px;
-       display:flex;flex-direction:column}}
-.badge{{font-size:26px;color:#00D4FF;font-weight:700;letter-spacing:4px;
-       animation:apparait 600ms cubic-bezier(.2,.8,.2,1)}}
-.sur-titre{{font-family:'Titrage',sans-serif;font-size:38px;font-weight:700;
-          color:#7F8AA8;letter-spacing:6px;margin-top:auto;
-          animation:apparait 700ms 250ms cubic-bezier(.2,.8,.2,1)}}
-.trait{{width:120px;height:7px;border-radius:4px;margin:32px 0 36px 0;
-       background:linear-gradient(90deg,#00D4FF,#7B2FFF);transform-origin:left;
-       animation:surgit 700ms 400ms cubic-bezier(.2,.8,.2,1)}}
-.sujet{{font-family:'Titrage',sans-serif;font-size:88px;font-weight:700;color:#fff;
-       line-height:1.04;letter-spacing:-2px;text-shadow:0 3px 18px rgba(0,0,0,0.85);
-       animation:apparait 800ms 500ms cubic-bezier(.2,.8,.2,1)}}
-.intro{{font-size:48px;color:#E0E8F0;line-height:1.38;font-weight:600;margin-top:auto;
-       text-shadow:0 2px 12px rgba(0,0,0,0.9);--couleur-mot:#E0E8F0;
-       animation:apparait 800ms 800ms cubic-bezier(.2,.8,.2,1)}}
-{_ANIM_CSS}
-</style></head>
-<body>
-<div class="fond anim"></div>
-<div class="slide">
-<div class="badge anim">{MARQUE}</div>
-<div class="sur-titre anim">AU PROGRAMME</div>
-<div class="trait anim"></div>
-<div class="sujet anim">{titre}</div>
-<div class="intro anim">{intro}</div>
-</div>{_seek_js(duree_ms)}
-</body></html>"""
+    debut, total = enchainement or (0, duree_ms)
+    corps = _accroche_corps(script, deja_entre=True, flottement_ms=debut)
+    return _page(corps, duree_ms, mots, script.get("introduction", ""),
+                 progres=progres, enchainement=(debut, total))
 
 
 def _conclusion_slide_html(script: dict, bg: str = "#0D0D1A",
                            image_path: "Path | None" = None,
                            duree_ms: int = DUREE_SLIDE_DEFAUT_MS,
-                           mots: "list[dict] | None" = None) -> str:
-    conclusion = _mots_html(script.get("conclusion", ""), mots)
-    hashtags = " ".join(script.get("hashtags", [])[:6])
-    body_bg = _bg_style(image_path)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-{_POLICES_CSS}
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{width:1080px;height:1920px;background:#0D0D1A;overflow:hidden;
-     font-family:'Lecture',sans-serif;--duree:{duree_ms}ms}}
-.fond{{{body_bg}}}
-.slide{{width:100%;height:100%;padding:{ZONE_SURE_HAUT}px {ZONE_SURE_DROITE}px {ZONE_SURE_BAS}px 64px;
-       display:flex;flex-direction:column}}
-.label{{font-family:'Titrage',sans-serif;font-size:46px;font-weight:700;color:#00D4FF;
-       letter-spacing:-0.5px;
-       animation:apparait 600ms cubic-bezier(.2,.8,.2,1)}}
-.conclusion{{font-size:54px;color:#fff;line-height:1.32;font-weight:600;margin-top:52px;
-            text-shadow:0 2px 12px rgba(0,0,0,0.9);--couleur-mot:#FFFFFF;
-            animation:apparait 800ms 200ms cubic-bezier(.2,.8,.2,1)}}
-.hashtags{{font-size:32px;color:#00D4FF;line-height:1.7;font-weight:600;margin-top:auto;
-          animation:apparait 600ms 700ms cubic-bezier(.2,.8,.2,1)}}
-.cta{{font-family:'Titrage',sans-serif;font-size:40px;font-weight:700;color:#fff;
-     margin-top:38px;
-     animation:surgit 700ms 1000ms cubic-bezier(.2,.8,.2,1)}}
-{_ANIM_CSS}
-</style></head>
-<body>
-<div class="fond anim"></div>
-<div class="slide">
-<div class="label anim">✅ À retenir</div>
-<div class="conclusion anim">{conclusion}</div>
-<div class="hashtags anim">{hashtags}</div>
-<div class="cta anim">❤️ Like &nbsp; 💬 Commente &nbsp; 🔔 Abonne-toi</div>
-</div>{_seek_js(duree_ms)}
-</body></html>"""
+                           mots: "list[dict] | None" = None,
+                           progres: "tuple[int, int] | None" = None) -> str:
+    """Slide de fin : mascotte, titre de conclusion, appel à s'abonner, signature."""
+    from html import escape
+
+    titre = script.get("titre_conclusion") or TITRE_CONCLUSION_DEFAUT
+    mini = (f'<img style="height:104px" src="{escape(MASCOTTE.as_uri())}" alt="">'
+            if MASCOTTE.exists() else "")
+    nom, _, suite = MARQUE.lower().partition(".")
+    signature = (f'<div class="signature entre anim" style="animation-delay:1100ms">'
+                 f'{mini}<span>{escape(nom)}<small>{"." + escape(suite) if suite else ""}'
+                 f'</small></span></div>')
+    corps = (
+        f'<div style="margin-top:100px"></div>{_mascotte_html(MASCOTTE_H)}'
+        f'<div class="titre accroche" style="font-size:{_corps_titre(titre, CORPS_ACCROCHE)}px">'
+        f'{_titre_cinetique(titre, 250)}</div>'
+        + _entree("sous-titre", f"Abonne-toi à {PSEUDO}", 800)
+        + signature
+    )
+    return _page(corps, duree_ms, mots, script.get("conclusion", ""), progres=progres)
 
 
 def plan_slides(script: dict) -> list[dict]:
@@ -1975,12 +2500,13 @@ def generate_html_slides(
         script_path: Chemin vers le fichier JSON du script
         images:      Dictionnaire optionnel {slide_id: image_path} depuis fetch_slide_images()
         durees_ms:   Durée d'affichage de chaque slide, en millisecondes, indexée
-                     par slide_id. Sert à caler le Ken Burns sur la longueur du
-                     segment audio ; sans elle, une durée par défaut s'applique et
-                     la page reste utilisable pour un export PNG statique.
+                     par slide_id. Cale les animations sur le segment audio et,
+                     si toutes les slides en ont une, la barre de progression
+                     globale ; sans elle, une durée par défaut s'applique et la
+                     page reste utilisable pour un export PNG statique.
         mots_ms:     Horodatage des mots prononcés, par slide_id, produit par
-                     media/align.py. Active le surlignage karaoké ; sans lui, le
-                     texte s'affiche d'un bloc comme auparavant.
+                     media/align.py. Cale les sous-titres sur la voix ; sans lui,
+                     ils sont répartis uniformément sur la slide.
 
     Returns:
         Liste ordonnée des fichiers HTML générés
@@ -1996,20 +2522,42 @@ def generate_html_slides(
     imgs = images or {}
     durees = durees_ms or {}
     mots = mots_ms or {}
+    plan = plan_slides(script)
 
-    for entree in plan_slides(script):
+    # Progression globale : render.py fournit la durée de chaque slide, donc
+    # l'instant où chacune commence dans la vidéo montée bout à bout. Sans la
+    # durée de toutes les slides (aperçu PNG, segment manquant), pas de barre :
+    # une progression partielle serait fausse.
+    debuts: dict[str, int] = {}
+    if durees and all(e["id"] in durees for e in plan):
+        cumul = 0
+        for e in plan:
+            debuts[e["id"]] = cumul
+            cumul += durees[e["id"]]
+    duree_totale = sum(durees.get(e["id"], 0) for e in plan)
+
+    # Accroche et introduction ne font qu'un écran : la seconde reprend la
+    # première là où elle en est (voir `_intro_slide_html`).
+    enchainement: dict[str, tuple[int, int]] = {}
+    if [e["genre"] for e in plan[:2]] == ["titre", "intro"]:
+        d_titre, d_intro = (durees.get(e["id"], DUREE_SLIDE_DEFAUT_MS) for e in plan[:2])
+        enchainement = {plan[0]["id"]: (0, d_titre + d_intro),
+                        plan[1]["id"]: (d_titre, d_titre + d_intro)}
+
+    for entree in plan:
         sid = entree["id"]
         commun = {
             "image_path": imgs.get(sid) or imgs.get("slide_00"),
             "duree_ms": durees.get(sid, DUREE_SLIDE_DEFAUT_MS),
             "mots": mots.get(sid),
+            "progres": (debuts[sid], duree_totale) if sid in debuts else None,
         }
         genre = entree["genre"]
 
         if genre == "intro":
-            html = _intro_slide_html(script, **commun)
+            html = _intro_slide_html(script, **commun, enchainement=enchainement.get(sid))
         elif genre == "titre":
-            html = _title_slide_html(script, **commun)
+            html = _title_slide_html(script, **commun, enchainement=enchainement.get(sid))
         elif genre == "conclusion":
             html = _conclusion_slide_html(script, **commun)
         else:

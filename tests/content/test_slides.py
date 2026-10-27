@@ -33,6 +33,209 @@ from content.slides import (
     plan_slides,
 )
 
+# ── Motion design ─────────────────────────────────────────────────────────────
+
+def _mots(texte: str, debut: float = 1.0, pas: float = 0.3) -> list[dict]:
+    return [{"mot": m, "debut": debut + i * pas, "fin": debut + (i + 1) * pas}
+            for i, m in enumerate(texte.split())]
+
+
+def test_l_anneau_se_remplit_quand_le_chiffre_est_prononce():
+    """Fixé à 260 ms, le remplissage précédait la voix : le geste qui montre la
+    part se jouait avant que la part soit dite."""
+    mots = _mots("Le modèle atteint 95% de réussite")      # « 95% » à 1,9 s
+    svg = _graphic_svg({"type": "stat", "donnees": {"valeur": "95%"}},
+                       mots=mots, duree_ms=6000)
+    assert re.search(r'class="remplit anim"[^>]*animation-delay:1900ms', svg)
+    assert 'class="rebond anim" style="animation-delay:1900ms"' in svg
+
+
+def test_sans_chiffre_prononce_l_anneau_garde_son_instant_par_defaut():
+    svg = _graphic_svg({"type": "stat", "donnees": {"valeur": "95%"}},
+                       mots=_mots("un texte sans nombre"), duree_ms=6000)
+    assert "animation-delay:260ms" in svg
+    assert "rebond" not in svg
+
+
+def test_les_barres_poussent_apres_leur_bloc():
+    donnees = {"items": [{"label": "IA", "valeur": 92}, {"label": "Humain", "valeur": 78}]}
+    svg = _graphic_svg({"type": "comparaison", "donnees": donnees},
+                       mots=_mots("l'IA obtient 92 contre 78"), duree_ms=6000)
+    assert svg.count('class="pousse anim"') == 2
+
+
+def test_sans_cadence_les_barres_restent_posees():
+    """Sans datation, rien ne doit rester invisible à zéro."""
+    donnees = {"items": [{"label": "IA", "valeur": 92}, {"label": "Humain", "valeur": 78}]}
+    assert "pousse" not in _graphic_svg({"type": "comparaison", "donnees": donnees})
+
+
+def test_le_titre_entre_mot_par_mot_et_reste_echappe():
+    from content.slides import _titre_cinetique
+
+    html = _titre_cinetique("R&D <et> IA", 100)
+    assert html.count('class="mot-titre anim"') == 3
+    assert "R&amp;D" in html and "&lt;et&gt;" in html
+    assert "animation-delay:240ms" in html                  # 100 + 2 × 70
+
+
+def test_les_mises_en_valeur_alternent_cyan_puis_violet():
+    from content.slides import _mots_valorises
+
+    mots = _mots_valorises("Ça marche **chez toi**, ça marche **chez eux** et **là**")
+    classes = [c for mot in mots for _, c in mot if c]
+    assert classes == ["val-accent", "val-accent", "val-violet", "val-violet", "val-accent"]
+    # « **chez toi**, » : la virgule suit la mise en valeur sans en faire partie.
+    assert ("toi", "val-accent") in mots[3] and (",", None) in mots[3]
+
+
+def test_le_titre_valorise_reste_echappe_et_sans_asterisques():
+    from content.slides import _texte_brut, _titre_cinetique
+
+    html = _titre_cinetique("**R&D**, c'est <quoi> ?", 0)
+    assert '<span class="val-accent">R&amp;D</span>' in html
+    assert "&lt;quoi&gt;" in html and "**" not in html
+    assert html.count('class="mot-titre anim"') == 3          # « ? » collé
+    assert _texte_brut("**Ollama** en **deux**") == "Ollama en deux"
+
+
+def test_morceaux_de_trois_mots_coupes_a_la_ponctuation():
+    from content.slides import MORCEAU_MAX_CARS, _morceaux
+
+    mots = "Ton ordinateur peut faire tourner une IA, sans internet. 2. Télécharger".split()
+    groupes = _morceaux(mots)
+    textes = [" ".join(mots[i] for i in g) for g in groupes]
+    assert textes == ["Ton ordinateur", "peut faire tourner", "une IA,",
+                      "sans internet.", "2. Télécharger"]
+    assert all(len(t) <= MORCEAU_MAX_CARS for t in textes)
+    assert _morceaux(["anticonstitutionnellement"]) == [[0]]   # un mot long reste seul
+
+
+def test_sous_titres_un_morceau_a_la_fois_cales_sur_la_voix():
+    from content.slides import _datation_sous_titres, _sous_titres_html
+
+    datation = _datation_sous_titres("", _mots("un deux trois quatre", 1.0, 0.5), 6000)
+    assert [t for _, t in datation] == [1000, 1500, 2000, 2500]
+    html = _sous_titres_html(datation, 6000)
+    assert html.count('class="morceau anim"') == 2
+    # Premier morceau dès 0, le second à l'instant de « quatre », jusqu'à la fin.
+    assert "@keyframes st0{0%{opacity:0}0.000%{opacity:1}41.667%{opacity:0}" in html
+    assert "@keyframes st1{0%{opacity:0}41.667%{opacity:1}100.000%{opacity:0}" in html
+
+
+def test_sans_datation_les_sous_titres_se_repartissent_et_s_echappent():
+    from content.slides import SORTIE_MS, _datation_sous_titres, _sous_titres_html
+
+    datation = _datation_sous_titres("a b <c> d", None, 4000 + SORTIE_MS)
+    assert [t for _, t in datation] == [0, 1000, 2000, 3000]
+    assert "&lt;c&gt;" in _sous_titres_html(datation, 4000)
+
+
+def test_le_titre_prononce_precede_les_mots_dates():
+    from content.slides import _datation_sous_titres
+
+    datation = _datation_sous_titres("", _mots("contenu lu", 1.0), 6000, prefixe="Mon titre")
+    assert datation[:2] == [("Mon", 0), ("titre", 500)]
+
+
+def test_barre_de_progression_globale():
+    from content.slides import _progres_html
+
+    assert _progres_html(None, 5000) == ""
+    html = _progres_html((5000, 20000), 5000)
+    assert "scaleX(0.25000)" in html and "scaleX(0.50000)" in html
+
+
+def test_la_progression_suit_le_plan_complet(tmp_path):
+    import json
+
+    from content.slides import generate_html_slides
+
+    script = tmp_path / "s.json"
+    script.write_text(json.dumps({"titre_video": "T", "hook": "h",
+                                  "slides": [{"numero": 1, "titre": "A", "contenu": "c"}],
+                                  "conclusion": "fin"}), encoding="utf-8")
+    pages = generate_html_slides(script, durees_ms={"slide_00": 1000, "slide_01": 2000,
+                                                    "slide_02": 1000})
+    assert "scaleX(0.25000)" in pages[1].read_text(encoding="utf-8")
+    # Une durée manque : pas de barre plutôt qu'une progression fausse.
+    pages = generate_html_slides(script, durees_ms={"slide_00": 1000})
+    assert 'class="progres' not in pages[1].read_text(encoding="utf-8")
+
+
+def test_l_habillage_n_affiche_ni_badge_ni_compteur_ni_paragraphe():
+    from content.slides import MARQUE, _slide_html
+
+    html = _slide_html({"numero": 2, "titre": "T", "contenu": "Texte lu", "visuel": "🧠"},
+                       6, duree_ms=6000)
+    assert MARQUE not in html and "2/6" not in html and "🧠" not in html
+    assert 'class="content' not in html and "soustitres" in html
+
+
+def test_surtitre_et_sous_titre_seulement_sans_figure():
+    from content.slides import _slide_html
+
+    slide = {"titre": "T", "contenu": "c", "surtitre": "Outil", "sous_titre": "Ligne grise"}
+    avec = _slide_html({**slide, "graphique": {"type": "liste",
+                                               "donnees": {"items": ["a", "b"]}}}, 1)
+    sans = _slide_html(slide, 1)
+    assert "Outil" not in avec and "Ligne grise" not in avec
+    assert "Outil" in sans and "Ligne grise" in sans
+
+
+def test_l_introduction_prolonge_l_accroche_sans_coupure():
+    """L'accroche ne sort pas, l'introduction n'entre pas : un seul écran."""
+    from content.slides import DEJA_ENTRE_MS, _intro_slide_html, _title_slide_html
+
+    script = {"titre_video": "Mon **sujet**", "hook": "h", "introduction": "i"}
+    accroche = _title_slide_html(script, duree_ms=4000, enchainement=(0, 7000))
+    intro = _intro_slide_html(script, duree_ms=3000, enchainement=(4000, 7000))
+    assert 'class="slide anim sortie"' not in accroche
+    assert 'class="slide anim sortie"' in intro              # la séquence se termine
+    assert f"animation-delay:{250 + DEJA_ENTRE_MS}ms" in intro
+    assert "animation-delay:-4000ms" in intro                # mascotte et fond en phase
+    assert "animation-duration:7000ms" in intro and "Au programme" not in intro
+
+
+def test_l_etat_par_defaut_precede_la_sortie():
+    """L'aperçu PNG et le contrôle de mise en page lisent l'état au chargement :
+    le dernier instant montrerait une slide déjà effacée."""
+    from content.slides import SORTIE_MS, _slide_html
+
+    html = _slide_html({"numero": 1, "titre": "T", "contenu": "C"}, 3, duree_ms=6000)
+    assert f"animation-delay:{6000 - SORTIE_MS}ms" in html     # la sortie
+    assert f"DUREE_MS - {SORTIE_MS}" in html                   # l'état par défaut
+
+
+# ── Animations Lottie ─────────────────────────────────────────────────────────
+
+def test_une_animation_embarque_ses_donnees_et_son_depart():
+    """Les données sont injectées dans la page : un fetch serait refusé en file://."""
+    html = _graphic_svg({"type": "animation", "donnees": {"nom": "valide"}})
+    assert 'class="lottie"' in html
+    assert '"nm":"valide"' in html                    # le JSON est dans la page
+    assert "depart: 420" in html
+
+
+def test_une_animation_inconnue_laisse_la_zone_vide(caplog):
+    with caplog.at_level("WARNING"):
+        assert _graphic_svg({"type": "animation", "donnees": {"nom": "absente"}}) == ""
+    assert "valide" in caplog.text                    # nomme les disponibles
+
+
+def test_seek_pilote_les_animations_et_la_bibliotheque_n_est_chargee_qu_au_besoin():
+    """seek() fige Lottie comme les animations CSS : sans cela, l'animation
+    jouerait en temps réel et le rendu cesserait d'être déterministe."""
+    from content.slides import _slide_html
+
+    avec = _slide_html({"numero": 1, "titre": "T", "contenu": "C",
+                        "graphique": {"type": "animation", "donnees": {"nom": "valide"}}},
+                       1, duree_ms=6000)
+    sans = _slide_html({"numero": 1, "titre": "T", "contenu": "C"}, 1, duree_ms=6000)
+    assert "goToAndStop" in avec and "lottie_light.min.js" in avec
+    assert "lottie_light.min.js" not in sans
+
+
 TYPES_FIGURES = [
     "stat", "etapes", "couches", "comparaison", "liste", "neurones", "cycle",
     "matrice", "frise", "embranchement", "venn",

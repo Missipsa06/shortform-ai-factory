@@ -8,6 +8,9 @@ Choisi par IMAGE_PROVIDER dans .env :
     cloudflare  Images générées par Workers AI (FLUX.1 schnell). Palier gratuit
                 de 10 000 Neurons/jour, soit environ 150 images — largement
                 au-dessus du plafond réel du pipeline, fixé par le quota TTS.
+    wan2gp      Images générées en local par Z-Image Turbo (media/wan2gp.py) :
+                9:16 natif, graine fixe, sans quota. Exige Wan2GP et un GPU, donc
+                n'existe pas sous Docker — repli sur Pexels si IMAGE_FALLBACK.
 
 Usage :
     python -m content.images --query "neural network" --provider cloudflare
@@ -40,8 +43,11 @@ PEXELS_CANDIDATS = 15
 IMAGES_DIR  = Path("data/images")
 CACHE_FILE  = IMAGES_DIR / "cache.json"
 
-FOURNISSEURS = ("pexels", "cloudflare")
+FOURNISSEURS = ("pexels", "cloudflare", "wan2gp")
 FOURNISSEUR_DEFAUT = "pexels"
+# Fournisseurs qui dessinent au lieu de chercher : ils reçoivent une composition
+# décrite, la consigne de style, et jamais le titre de la vidéo.
+GENERATIFS = frozenset({"cloudflare", "wan2gp"})
 
 # ── Cloudflare Workers AI ─────────────────────────────────────────────────────
 CF_URL = "https://api.cloudflare.com/client/v4/accounts/{compte}/ai/run/{modele}"
@@ -234,6 +240,55 @@ def _generer_cloudflare(
     return chemin
 
 
+def _generer_wan2gp(
+    demandes: "list[tuple[str, str]]", output_dir: Path
+) -> "dict[str, Path] | None":
+    """
+    Génère en local les fonds manquants, **en un seul lancement de Wan2GP**.
+
+    Le chargement du modèle coûte bien plus qu'une image : un lancement par
+    slide le paierait autant de fois qu'il y a de slides. Le cache est donc
+    consulté d'abord, et seules les images absentes partent en génération.
+
+    Args:
+        demandes:   [(nom de fichier, description)] dans l'ordre des slides
+        output_dir: Dossier de destination
+
+    Returns:
+        {nom: chemin}, ou None si Wan2GP est indisponible — à l'appelant de
+        décider du repli
+    """
+    from media import wan2gp
+
+    cache = _load_cache()
+    images: dict[str, Path] = {}
+    manquantes: list[tuple[str, str, str]] = []
+    for nom, requete in demandes:
+        cle = f"wan2gp::{wan2gp.MODELE_IMAGE}::{output_dir.as_posix()}::{requete}::{nom}"
+        if cle in cache and Path(cache[cle]).exists():
+            images[nom] = Path(cache[cle])
+        else:
+            manquantes.append((nom, requete, cle))
+
+    if manquantes:
+        try:
+            rendues = wan2gp.generer_images(
+                [f"{requete}. {CF_STYLE}" for _, requete, _ in manquantes],
+                # Suffixe propre : Cloudflare écrit déjà `slide_00.jpg` dans ce
+                # dossier, et l'écraser ferait servir par son cache une image
+                # qui n'est pas la sienne.
+                [output_dir / f"{nom}_local" for nom, _, _ in manquantes],
+            )
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Génération locale impossible : %s", e)
+            return None
+        for (nom, _, cle), chemin in zip(manquantes, rendues):
+            images[nom] = chemin
+            cache[cle] = str(chemin)
+        _save_cache(cache)
+    return images
+
+
 def _load_cache() -> dict:
     """Charge le cache des images déjà téléchargées."""
     if CACHE_FILE.exists():
@@ -382,6 +437,12 @@ def fetch_image(
         Chemin vers l'image, ou None si échec — la slide garde alors son dégradé
     """
     fournisseur = _resoudre_fournisseur(provider)
+    if fournisseur == "wan2gp":
+        images = _generer_wan2gp([(filename, query)], output_dir)
+        if images is not None or not _repli_actif(fallback):
+            return (images or {}).get(filename)
+        logger.warning("Génération locale indisponible — repli sur Pexels")
+        fournisseur = "pexels"
     cache = _load_cache()
     # Le fournisseur ET le modèle font partie de la clé. Sans le fournisseur,
     # basculer de Pexels vers Cloudflare rendrait l'ancienne photo. Sans le
@@ -530,7 +591,7 @@ def _requete(entree: dict, script: dict, fournisseur: str) -> str:
             "intro": "opening atmosphere, wide establishing mood",
             "conclusion": "closing atmosphere, calm resolution",
         }[entree["genre"]]
-        if fournisseur == "cloudflare":
+        if fournisseur in GENERATIFS:
             # **Jamais le titre de la vidéo vers un modèle génératif.** Une phrase
             # littérale est un texte à écrire, et « no text » n'y peut rien :
             # constaté le 11/10/2026, « L'IA ressuscite des secrets d'archives
@@ -545,7 +606,7 @@ def _requete(entree: dict, script: dict, fournisseur: str) -> str:
         titre = script.get("titre_video", "") or script.get("titre_original", "")
         return f"{titre} {nuance}".strip()
 
-    if fournisseur == "cloudflare" and (dedie or "").strip():
+    if fournisseur in GENERATIFS and (dedie or "").strip():
         return dedie.strip()
     return (repli or dedie or "").strip()
 
@@ -582,12 +643,45 @@ def fetch_slide_images(
     Returns:
         Dictionnaire {slide_id: image_path}
     """
+    fournisseur = _resoudre_fournisseur(provider)
+
+    # En local, toute la vidéo part en un seul lancement de Wan2GP.
+    if fournisseur == "wan2gp":
+        images = _generer_wan2gp(_demandes(script, fournisseur, schemas), output_dir)
+        if images is not None:
+            logger.info("%d illustration(s) générées en local", len(images))
+            return images
+        if not _repli_actif(fallback):
+            return {}
+        logger.warning("Génération locale indisponible — repli sur Pexels")
+        fournisseur = "pexels"
+
+    images: dict[str, Path] = {}
+    for nom, requete in _demandes(script, fournisseur, schemas):
+        chemin = fetch_image(requete, output_dir, nom, fournisseur, fallback)
+        if chemin:
+            images[nom] = chemin
+
+    logger.info(
+        "%d illustration(s) distinctes obtenues via %s", len(images), fournisseur
+    )
+    return images
+
+
+def _demandes(
+    script: dict, fournisseur: str, schemas: "bool | None"
+) -> "list[tuple[str, str]]":
+    """
+    (identifiant de slide, requête) de chaque slide à illustrer, dans l'ordre.
+
+    Commun aux deux chemins — slide par slide, ou tout en un lancement local —
+    pour qu'ils appliquent les mêmes règles : saut éventuel des schémas,
+    requête selon le fournisseur, doublons écartés.
+    """
     from content.slides import plan_slides
 
-    fournisseur = _resoudre_fournisseur(provider)
-    images: dict[str, Path] = {}
+    demandes: list[tuple[str, str]] = []
     vues: dict[str, str] = {}
-
     for entree in plan_slides(script):
         donnees = entree["donnees"] or {}
         if _sauter_schemas(schemas) and (donnees.get("graphique") or {}).get("type"):
@@ -608,15 +702,8 @@ def fetch_slide_images(
             )
             continue
         vues[requete] = entree["id"]
-
-        chemin = fetch_image(requete, output_dir, entree["id"], fournisseur, fallback)
-        if chemin:
-            images[entree["id"]] = chemin
-
-    logger.info(
-        "%d illustration(s) distinctes obtenues via %s", len(images), fournisseur
-    )
-    return images
+        demandes.append((entree["id"], requete))
+    return demandes
 
 
 def main() -> None:

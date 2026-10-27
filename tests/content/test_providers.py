@@ -224,3 +224,24 @@ def test_le_client_borne_son_attente_et_ne_reessaie_pas(monkeypatch):
     client = client_openai(PROVIDERS["gemini"])
     assert client.timeout == LLM_DELAI < 600
     assert client.max_retries == 0
+
+
+# ── Contrat du script ─────────────────────────────────────────────────────────
+
+def test_une_slide_reduite_a_une_chaine_est_hors_contrat(monkeypatch):
+    """Observé le 27/10/2026 sur NVIDIA : la chaîne de repli doit continuer."""
+    import content.providers as providers
+
+    verdicts = {}
+
+    def appel(system, prompt, valider=None, **_):
+        for nom, brut in {
+            "chaine": '{"titre_video": "t", "slides": ["Slide 1"]}',
+            "objet": '{"titre_video": "t", "slides": [{"titre": "a"}]}',
+        }.items():
+            verdicts[nom] = valider(brut)
+        return '{"titre_video": "t", "slides": [{"titre": "a"}]}'
+
+    monkeypatch.setattr(providers, "call_llm", appel)
+    providers.call_llm_json("s", "p", champs_requis=("titre_video", "slides"))
+    assert verdicts == {"chaine": False, "objet": True}

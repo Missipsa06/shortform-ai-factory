@@ -47,6 +47,10 @@ def test_garde_la_ponctuation_et_les_accents():
     assert _clean_text(texte) == texte
 
 
+def test_retire_les_marqueurs_de_mise_en_valeur():
+    assert _clean_text("1. **Installer** Ollama") == "1. Installer Ollama"
+
+
 def test_normalise_les_espaces_multiples():
     assert _clean_text("un    texte   avec   des   espaces") == "un texte avec des espaces"
 
@@ -458,6 +462,47 @@ def test_la_scission_ne_change_jamais_de_moteur(monkeypatch, tmp_path):
     tts._synthetiser_ou_scinder(lot, tmp_path / "o.mp3", "Charon",
                                 "gemini", tmp_path, 0)
     assert set(moteurs) == {"gemini"}
+
+
+def _quota_au_deuxieme_lot(monkeypatch):
+    """Gemini produit le premier lot, puis son quota du jour tombe."""
+    import media.tts as tts
+
+    def synthese(lot, cible, voix, fournisseur, travail, rang):
+        if rang > 0:
+            raise QuotaEpuise("quota du jour", Diagnostic(
+                genre="jour", delai=0.0, limite=None, message="quota journalier épuisé"))
+        cible.write_bytes(b"lot")
+
+    monkeypatch.setattr(tts, "_synthetiser_ou_scinder", synthese)
+    return tts, {"slides": [{"numero": i, "titre": f"T{i}", "contenu": "x" * 60}
+                            for i in range(1, 6)]}
+
+
+def test_qwen3_reprend_la_narration_meme_apres_le_premier_lot(monkeypatch, tmp_path):
+    """
+    Régression du 24/10/2026 : quota Gemini épuisé au deuxième lot, et la règle
+    « premier lot seulement », écrite pour les replis lot par lot, refusait
+    Qwen3. Or il refait toute la narration : aucune voix ne se mêle.
+    """
+    tts, script = _quota_au_deuxieme_lot(monkeypatch)
+    monkeypatch.setenv("TTS_FALLBACK", "1")
+    repris: list[str] = []
+    monkeypatch.setattr(tts, "generer_audio_qwen3",
+                        lambda s, d, f, v: repris.append(v) or (f, []))
+
+    tts.generer_audio_groupe(script, tmp_path / "seg", tmp_path / "f.mp3",
+                             provider="gemini")
+    assert repris == ["charon"]
+
+
+def test_nvidia_reste_interdit_apres_le_premier_lot(monkeypatch, tmp_path):
+    """NVIDIA continuerait lot par lot : deux voix dans la même bande son."""
+    tts, script = _quota_au_deuxieme_lot(monkeypatch)
+    monkeypatch.setenv("TTS_FALLBACK", "nvidia")
+    with pytest.raises(QuotaEpuise):
+        tts.generer_audio_groupe(script, tmp_path / "seg", tmp_path / "f.mp3",
+                                 provider="gemini")
 
 
 def test_un_quota_epuise_nest_pas_traite_par_une_coupe(monkeypatch, tmp_path):

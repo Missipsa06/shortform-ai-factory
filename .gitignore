@@ -52,6 +52,9 @@ data/
 # ...et les voix de référence du clonage : sans elles, le moteur qwen3 ne
 # trouve aucune voix sur un clone neuf du dépôt.
 !media/assets/voix/*.mp3
+# ...et la mascotte, référence de toutes les scènes animées.
+!media/assets/mascotte/*.jpg
+!media/assets/mascotte/*.png
 # ...et les schémas de la documentation, que le README affiche.
 !docs/*.png
 

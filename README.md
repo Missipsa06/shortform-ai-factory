@@ -140,7 +140,7 @@ Institute (CC BY 4.0) et NIST (domaine public).
 | Sélection | `automation/workflow.py` | Score hybride lexical + sémantique, partition par statut, articles marqués consommés. |
 | Figures source | `scraper/figures.py` | Relève les figures publiées dans l'article (arXiv HTML, blog HuggingFace), avec légende et crédit. Le LLM peut en choisir une par indice. |
 | Script | `content/llm.py` + `providers.py` | Reformulation grand public en JSON structuré (hook, introduction, slides, conclusion, hashtags). Tout fait cité doit se retrouver dans la source. |
-| Illustrations | `content/images.py` | Photos Pexels ou images générées (Cloudflare Workers AI), sur chaque slide de contenu. `IMAGE_SLIDES_SCHEMA=0` en prive celles qui portent un schéma. |
+| Illustrations | `content/images.py` | Photos Pexels, ou images générées par Cloudflare Workers AI ou en local par Wan2GP (Z-Image Turbo, 9:16 natif), sur chaque slide de contenu. `IMAGE_SLIDES_SCHEMA=0` en prive celles qui portent un schéma. |
 | Voix | `media/tts.py` | Gemini TTS, NVIDIA Magpie, ou Qwen3-TTS en local par Wan2GP (`media/wan2gp.py`, voix Charon clonée). Passe **avant** l'image : elle en donne la durée. Les moteurs hébergés synthétisent **par lots** pour ménager les quotas, puis redécoupent par slide ; Qwen3 produit un fichier par segment. |
 | Datation | `media/align.py` | Horodate chaque mot du texte connu, pour le karaoké. |
 | Schémas | `content/slides.py` | Onze figures générées, la figure d'article et 32 pictogrammes, construits au rythme de la narration (voir plus bas). |
@@ -161,7 +161,7 @@ d'environnement choisit le moteur, une option de ligne de commande le surcharge.
 |---|---|---|---|
 | Script | `LLM_PROVIDER` | `gemini`, `mistral`, `openrouter`, `nvidia`, `kimi` | `mistral` |
 | Voix | `TTS_PROVIDER` | `gemini` (Charon), `qwen3` (Charon clonée, local), `nvidia` (Louise, Pascal) | `gemini` |
-| Illustrations | `IMAGE_PROVIDER` | `pexels`, `cloudflare` | `pexels` |
+| Illustrations | `IMAGE_PROVIDER` | `pexels`, `cloudflare`, `wan2gp` (local) | `pexels` |
 | Vecteurs | `EMBEDDING_MODEL` | tout modèle fastembed (local) | MiniLM multilingue |
 
 **Repli automatique.** Un quota journalier épuisé ou un service surchargé ne doit

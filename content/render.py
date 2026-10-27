@@ -329,6 +329,9 @@ async def _rendre(html_files: list[Path], durees: dict[str, int],
 # TikTok, ou un mot plus large que sa colonne. Seuls les enfants directs de
 # `.slide` sont mesurés : la colonne est un flex vertical, un contenu trop long
 # allonge donc son bloc, qui sort alors de la zone utile.
+# La colonne des boutons ne couvre que le bas du cadre (`ZONE_SURE_DROITE_DEPUIS`) :
+# un bloc peut s'étendre jusqu'à la marge droite tant qu'il reste au-dessus, et
+# le débord n'est une faute que pour sa partie située en dessous.
 _JS_MESURE = """z => {
   const fautes = [], tol = 2;
   for (const el of document.querySelectorAll('.slide > *')) {
@@ -337,8 +340,11 @@ _JS_MESURE = """z => {
     const nom = String(el.className).split(' ')[0] || el.tagName.toLowerCase();
     if (r.bottom > z.h - z.bas + tol)
       fautes.push(`${nom} descend à ${Math.round(r.bottom)} px (limite ${z.h - z.bas})`);
-    if (r.right > z.w - z.droite + tol)
+    if (r.right > z.w - z.marge + tol)
       fautes.push(`${nom} déborde à droite jusqu'à ${Math.round(r.right)} px`);
+    else if (r.bottom > z.depuis + tol && r.right > z.w - z.droite + tol)
+      fautes.push(`${nom} déborde à droite jusqu'à ${Math.round(r.right)} px `
+                  + `sous ${z.depuis} px, dans la colonne des boutons`);
     if (el.scrollWidth > el.clientWidth + tol)
       fautes.push(`${nom} : un mot dépasse la largeur de la colonne`);
   }
@@ -350,9 +356,10 @@ async def _mesurer(html_files: list[Path]) -> dict[str, list[str]]:
     """Défauts de mise en page par slide ; les slides saines n'y figurent pas."""
     from playwright.async_api import async_playwright
 
-    from content.slides import ZONE_SURE_BAS, ZONE_SURE_DROITE
+    from content.slides import MARGE, ZONE_SURE_BAS, ZONE_SURE_DROITE, ZONE_SURE_DROITE_DEPUIS
 
-    zones = {"w": LARGEUR, "h": HAUTEUR, "bas": ZONE_SURE_BAS, "droite": ZONE_SURE_DROITE}
+    zones = {"w": LARGEUR, "h": HAUTEUR, "bas": ZONE_SURE_BAS, "droite": ZONE_SURE_DROITE,
+             "depuis": ZONE_SURE_DROITE_DEPUIS, "marge": MARGE}
     defauts: dict[str, list[str]] = {}
     async with async_playwright() as p:
         navigateur = await p.chromium.launch(args=ARGS_CHROMIUM)
@@ -511,9 +518,19 @@ def main() -> None:
         Path(args.images) if args.images
         else Path("data/images") / script_path.stem
     )
-    images = {
-        p.stem: p for p in sorted(dossier_images.glob("slide_*.jpg"))
-    } if dossier_images.exists() else {}
+    # Deux variantes par slide peuvent coexister : `slide_00.jpg` (Pexels,
+    # Cloudflare) et `slide_00_local.*` (Z-Image par Wan2GP, format au choix de
+    # Wan2GP). Celle du fournisseur configuré l'emporte, l'autre sert de repli.
+    import os
+    import re
+
+    local = os.getenv("IMAGE_PROVIDER", "").strip().lower() == "wan2gp"
+    variantes: dict[str, dict[bool, Path]] = {}
+    for p in sorted(dossier_images.glob("slide_*")) if dossier_images.exists() else []:
+        trouve = re.fullmatch(r"(slide_\d+)(_local)?", p.stem)
+        if trouve and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+            variantes.setdefault(trouve.group(1), {})[bool(trouve.group(2))] = p
+    images = {sid: v.get(local, v.get(not local)) for sid, v in variantes.items()}
     if images:
         logger.info("%d illustration(s) reprises depuis %s", len(images), dossier_images)
     else:

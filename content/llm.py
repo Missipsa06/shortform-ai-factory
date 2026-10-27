@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 
 from content.providers import PROVIDERS, call_llm_json
-from content.slides import ICONES
+from content.slides import ICONES, catalogue_animations
 from scraper.storage import get_articles, update_status
 
 logger = logging.getLogger(__name__)
@@ -49,23 +49,27 @@ Résumé : {summary}
 
 Génère exactement ce JSON (sans markdown, sans backticks) :
 {{
-  "titre_video": "Titre accrocheur max 60 caractères",
+  "titre_video": "Titre accrocheur max 60 caractères, 1 à 2 mots entre ** ** (ex: '**Docker**, c'est quoi vraiment ?')",
+  "sous_titre_video": "Une ligne sous le titre, qui dit ce qu'on va comprendre (ex: 'La boîte qui fait tourner ton appli partout pareil.')",
   "introduction": "Annonce du sujet, 2 phrases max, ton chaleureux. Ex: 'Salut à tous ! Aujourd'hui on décortique ensemble ...'",
   "hook": "Deux phrases, la première chose entendue, avant la salutation : une accroche qui capte en 3 secondes, puis une raison de rester jusqu'au bout. Voir la section « Accroche » plus bas, elle est impérative",
   "slides": [
     {{
       "numero": 1,
-      "titre": "Titre de la slide (max 8 mots)",
+      "titre": "Titre de la slide (max 8 mots), 1 à 2 mots entre ** ** (ex: '1. **Décrire** ton appli')",
+      "surtitre": "Facultatif : un seul mot posé au-dessus du titre (ex: 'Pourquoi')",
+      "sous_titre": "Facultatif : une ligne sous le titre, pour une slide SANS graphique (ex: 'Même environnement, partout.')",
       "contenu": "Texte lu à voix haute (max 30 mots, simple, vulgarisé)",
       "visuel": "Emoji représentatif du concept",
       "graphique": {{
-        "type": "stat|etapes|couches|comparaison|liste|neurones|cycle|matrice|frise|embranchement|venn|figure_source",
+        "type": "stat|etapes|couches|comparaison|liste|neurones|cycle|matrice|frise|embranchement|venn|terminal|recap|figure_source|animation__TYPE_SCENE__",
         "donnees": {{}}
       }},
       "mots_cles_image": "2-3 mots-clés anglais pour chercher une photo illustrative (ex: neural network brain)",
       "illustration": "Visuel abstrait évoquant le concept de la slide, en anglais, TOUJOURS renseigné. Décris une atmosphère et des matières, jamais une scène ni un objet reconnaissable (ex: 'converging warm gradients over deep space, sense of transformation'). Ne mentionne ni texte, ni schéma, ni réseau de points reliés."
     }}
   ],
+  "titre_conclusion": "Titre court de la slide de fin, 1 à 2 mots entre ** ** (ex: 'Progresse en **IA**')",
   "conclusion": "Phrase de conclusion + appel à l'action (like, partage, follow)",
   "hashtags": ["#IA", "#DataScience", "..."],
   "niveau_difficulte": "débutant|intermédiaire",
@@ -136,6 +140,35 @@ Types de graphiques disponibles — choisis le plus adapté au concept :
                  réellement. Deux notions qui s'opposent, c'est "comparaison" ;
                  deux notions dont l'une contient l'autre, c'est "couches".
                  Garde "commun" court : il s'inscrit dans une zone étroite.
+- "terminal"   : une fenêtre de terminal où les commandes se tapent sous les yeux
+                 → donnees: {{"chemin": "~/mon-appli", "depuis": 0, "lignes": [
+                     {{"cmd": "docker build -t mon-appli ."}},
+                     {{"out": "Step 1/2 : FROM node:20"}},
+                     {{"ok": "image créée"}}
+                   ]}}
+                 "cmd" est une commande tapée, "out" ce qu'elle affiche, "ok"
+                 un succès (affiché en vert, précédé de ✓).
+                 **Le choix par défaut dès que le sujet a des commandes ou du code
+                 à montrer** : un outil, une installation, une API, une ligne de
+                 commande. **Le terminal grandit d'une slide à l'autre** : la
+                 slide suivante reprend toutes les lignes de la précédente, puis
+                 ajoute les siennes, et "depuis" vaut le nombre de lignes déjà
+                 montrées (0 sur la première). Garde le même "chemin" partout.
+                 Chaque commande vient du résumé, ou est la commande générique
+                 exacte de l'outil ("ollama pull", "docker run", "pip install") :
+                 **n'invente aucune option, aucun drapeau, aucune sortie
+                 chiffrée**. Moins de 45 caractères par ligne, 10 lignes au plus.
+- "recap"      : le réflexe à retenir, en 2 à 4 lignes, juste avant la conclusion
+                 → donnees: {{"items": [
+                     {{"code": "Dockerfile", "texte": "décrire"}},
+                     {{"code": "docker build", "texte": "construire"}},
+                     {{"code": "docker run", "texte": "lancer"}}
+                   ]}}
+                 "code" est la commande ou le fichier déjà montré dans la vidéo,
+                 "texte" ce qu'il fait, en un ou deux mots. Le "contenu" de la
+                 slide prononce chaque "code" ou chaque "texte" : la ligne paraît
+                 quand la voix la dit. Une seule slide "recap" par vidéo, et
+                 seulement après des slides "terminal".
 - "figure_source" : une figure tirée de l'article lui-même
                  → donnees: {{"indice": 0}}
                  L'indice désigne une figure de la liste ci-dessous, et rien
@@ -146,6 +179,15 @@ Types de graphiques disponibles — choisis le plus adapté au concept :
                  mémoire vaut moins que celui des auteurs. Mais écarte les
                  captures d'interface denses et les tableaux chargés, illisibles
                  sur un téléphone. Une même figure ne sert qu'une fois.
+- "animation"  : un pictogramme animé, pour une idée simple qu'aucune donnée ne
+                 porte → donnees: {{"nom": "loupe"}}
+                 Le nom désigne une animation de cette liste, et aucune autre :
+__ANIMATIONS__
+                 **Préfère un schéma dès que la slide a une structure, une suite,
+                 un écart ou un chiffre** : une animation illustre, elle ne
+                 montre rien de mesurable. Une même animation ne sert qu'une
+                 fois par vidéo, et deux au plus par vidéo.
+__SCENE__
 
 {figures}
 
@@ -165,8 +207,17 @@ n'illustre rien. Préfère systématiquement une figure qui montre une relation 
 une suite ("etapes"), une superposition ("couches"), un écart ("comparaison"),
 une boucle ("cycle"), un croisement ("matrice").
 Ne dépasse pas 4 éléments par figure (5 pour "cycle", toujours 4 pour
-"matrice"), et garde les libellés à 3 mots maximum : au-delà, le texte déborde
-du schéma.
+"matrice", 10 lignes pour "terminal"), et garde les libellés à 3 mots maximum :
+au-delà, le texte déborde du schéma.
+
+Mise en valeur : dans "titre_video", "titre_conclusion" et chaque "titre" de
+slide, entoure de ** ** les 1 ou 2 mots qui portent l'idée ("Ça tourne **chez
+toi**, pas **chez eux**"). Jamais tout le titre, jamais plus de deux passages
+par titre. N'en mets ni dans "contenu" ni dans "sous_titre". "sous_titre" et
+"surtitre" ne vont QUE sur une slide dont "graphique" est null : sur une slide
+à graphique ils ne s'affichent pas, ne les écris pas. Un seul "surtitre" par
+vidéo au plus (un mot : "Pourquoi", "Attention", "Bonus"), et seulement s'il
+annonce un changement de registre.
 
 Génère entre 4 et 8 slides. Chaque slide = 1 concept clé vulgarisé avec une
 analogie concrète.
@@ -213,6 +264,41 @@ Exactitude — ces règles priment sur tout le reste, y compris le nombre de sli
 # (content/slides.py) : c'est le même vocabulaire qui rend le pictogramme, donc
 # aucun risque que le LLM propose une icône que le renderer ne connaît pas.
 SLIDE_PROMPT = SLIDE_PROMPT.replace("__ICONES__", ", ".join(sorted(ICONES)))
+# Même principe pour les animations : la liste vient du manifeste tenu par
+# content/lottie.py, avec ce que chacune évoque pour guider le choix.
+SLIDE_PROMPT = SLIDE_PROMPT.replace("__ANIMATIONS__", "\n".join(
+    f"                   - {nom} : {sens}" for nom, sens in catalogue_animations().items()
+))
+
+# Les scènes animées ne sont proposées que si Wan2GP est là pour les générer :
+# sous Airflow, le modèle choisirait sinon des scènes qu'aucune étape ne
+# saurait produire, et les slides resteraient vides.
+SCENE_PROMPT = """- "scene"      : la mascotte de la chaîne, un petit robot blanc, joue l'idée de
+                 la slide dans une courte scène animée
+                 → donnees: {{"action": "sits at a desk typing on a laptop full of glowing code, a wifi symbol glows above",
+                              "mouvement": "the wifi symbol fades out, the screen turns dark, the robot freezes in surprise"}}
+                 "action" décrit la scène de départ, "mouvement" ce qui s'y passe
+                 en cinq secondes. Les deux en anglais, concrets et visuels, avec
+                 des objets simples ; jamais de texte à l'écran, et le robot est
+                 le seul personnage. **C'est le choix par défaut d'une slide
+                 narrative** : sans chiffre, sans suite, sans structure à
+                 montrer, la slide porte une scène plutôt qu'une « liste » ou une
+                 « animation ». Une slide avec des données garde son schéma."""
+
+
+def _avec_scenes(prompt: str, disponible: bool) -> str:
+    """Ouvre ou ferme le type `scene` selon que Wan2GP peut le produire."""
+    return (prompt.replace("__TYPE_SCENE__", "|scene" if disponible else "")
+                  .replace("__SCENE__", SCENE_PROMPT if disponible else ""))
+
+
+def _wan2gp_disponible() -> bool:
+    from media import wan2gp
+
+    return not wan2gp.absence()
+
+
+SLIDE_PROMPT = _avec_scenes(SLIDE_PROMPT, _wan2gp_disponible())
 
 
 def _bloc_figures(figures: "list | None") -> str:

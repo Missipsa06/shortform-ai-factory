@@ -43,6 +43,32 @@ def test_les_entrees_de_commentaire_sont_ignorees():
     assert prononcer("_lisez-moi") == "_lisez-moi"
 
 
+def test_le_s_du_pluriel_anglais_est_muet():
+    """« des workflows » se dit « des workflow » : Qwen3 prononçait le s."""
+    assert prononcer("Des botnets et des workflows.", ["botnets", "workflow"]) == \
+        "Des botnet et des workflow."
+
+
+def test_les_invariables_et_les_finales_en_us_gardent_leur_s():
+    """« virus » ne devient pas « viru », ni « Kubernetes » « Kubernete »."""
+    texte = "Un virus attaque Kubernetes via pandas."
+    assert prononcer(texte, ["virus", "Kubernetes", "pandas"]) == texte
+
+
+def test_sans_termes_anglais_aucun_pluriel_n_est_touche():
+    assert prononcer("Des agents et des modèles.") == "Des agents et des modèles."
+
+
+def test_chaque_segment_finit_par_une_pause(monkeypatch, tmp_path):
+    """Qwen3 s'arrête sur son dernier mot : sans silence ajouté, la slide
+    suivante enchaînait sans respiration."""
+    vus: list[list[str]] = []
+    monkeypatch.setattr(wan2gp.subprocess, "run",
+                        lambda cmd, **_: vus.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+    wan2gp._en_mp3(tmp_path / "a.wav", tmp_path / "a.mp3")
+    assert f"apad=pad_dur={wan2gp.PAUSE_FIN_S}" in vus[0]
+
+
 # ── Installation ──────────────────────────────────────────────────────────────
 
 def _fausse_installation(racine, venv=".venv/Scripts/python.exe"):
@@ -141,6 +167,18 @@ def test_une_voix_inconnue_est_refusee_avant_wan2gp(wan2gp_imite, tmp_path):
     with pytest.raises(ValueError, match="charon"):          # nomme les disponibles
         wan2gp.synthetiser(["Bonjour."], [tmp_path / "a.mp3"], "inexistante")
     assert recues == []
+
+
+def test_chaque_image_prend_son_nom_et_son_format(wan2gp_imite, tmp_path):
+    """Wan2GP choisit le format ; le chemin rendu doit porter le vrai suffixe,
+    sans quoi la slide pointerait vers un fichier inexistant."""
+    recues, _ = wan2gp_imite
+    rendues = wan2gp.generer_images(["aube", "crépuscule"],
+                                    [tmp_path / "slide_00", tmp_path / "slide_01"])
+    assert [r.name for r in rendues] == ["slide_00.wav", "slide_01.wav"]  # suffixe de l'imitation
+    assert [r.read_text() for r in rendues] == ["aube", "crépuscule"]
+    assert recues[0][0]["model_type"] == wan2gp.MODELE_IMAGE
+    assert recues[0][0]["resolution"] == wan2gp.RESOLUTION_IMAGE
 
 
 def test_la_narration_qwen3_garde_un_fichier_par_segment(monkeypatch, tmp_path):

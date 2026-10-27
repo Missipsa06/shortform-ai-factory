@@ -52,7 +52,7 @@ GEMINI_TTS_VOICE=Charon
 NVIDIA_API_KEY=...          # LLM et/ou voix NVIDIA (build.nvidia.com)
 NVIDIA_TTS_VOICE=Louise     # Louise | Pascal
 
-IMAGE_PROVIDER=cloudflare   # pexels (photos) | cloudflare (généré)
+IMAGE_PROVIDER=cloudflare   # pexels (photos) | cloudflare (généré) | wan2gp (généré en local)
 CLOUDFLARE_ACCOUNT_ID=...   # section Workers AI du tableau de bord
 CLOUDFLARE_API_TOKEN=...    # droits « Workers AI — Read » ET « Edit »
 IMAGE_SLIDES_SCHEMA=        # 0 : prive d'illustration les slides à schéma

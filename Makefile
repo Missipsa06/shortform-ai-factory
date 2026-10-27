@@ -86,7 +86,13 @@ images:
 # Reprend un script JSON déjà généré et va jusqu'au MP4, sans rappeler le LLM.
 # `images` en tete : le rendu les reprend, mais encore faut-il qu'elles existent.
 # Sans cette etape, `make video` livrait des degrades la ou `make all` illustrait.
-video: images audio render assemble
+# Scènes animées de la mascotte (Wan2GP, local) ; mises en cache, une reprise ne
+# les régénère pas.
+scenes:
+	$(UV) python -m content.scenes --script $(PROC)/$(STEM).json
+
+# `images` n'en fait plus partie : l'habillage actuel n'affiche aucun fond illustré.
+video: scenes audio render assemble
 
 # Pipeline complet depuis un sujet : LLM, images, slides, TTS, montage, sous-titres.
 all:
@@ -99,13 +105,15 @@ all:
 # en cache apres le build d'Astro, ce build supplementaire est quasi instantane.
 # Le daemon est verifie avant le build : sans lui, docker echoue sur une erreur
 # de tube nomme Windows (« open //./pipe/dockerDesktopLinuxEngine ») qui ne dit
-# pas qu'il suffit de lancer Docker Desktop.
+# pas qu'il suffit de lancer Docker Desktop. Le montage de data/ l'est aussi :
+# apres une mise en veille, Docker repond mais le disque n'est plus montable
+# (« mkdir /run/desktop/mnt/host/d: file exists ») — voir automation/verifier_docker.py.
 #
 # Ecrit en Python et non en shell : `make` execute ses recettes via cmd.exe sous
 # Windows et via sh ailleurs. Un test shell portable n'existe pas — `{ ... }` et
 # `>/dev/null` sont des erreurs de syntaxe pour cmd.exe.
 docker-check:
-	@$(UV) python -c "import subprocess,sys;p=subprocess.run(['docker','info'],capture_output=True);sys.exit(0 if p.returncode==0 else 'Docker ne repond pas. Demarre Docker Desktop, attends 10 a 60 s, puis relance make up.')"
+	@$(UV) python -m automation.verifier_docker
 
 up: docker-check
 	docker build -t shortform-ai-factory-dashboard:latest .

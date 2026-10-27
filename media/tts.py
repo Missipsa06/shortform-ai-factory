@@ -513,9 +513,13 @@ def _synthetiser_nvidia(texte: str, sortie: Path, voix: str) -> None:
 def _clean_text(text: str) -> str:
     """
     Nettoie un texte avant synthèse vocale :
-    supprime les emojis, hashtags, URLs et caractères non prononçables.
+    supprime les emojis, hashtags, URLs, marqueurs de mise en valeur `**` et
+    caractères non prononçables.
     """
     import unicodedata
+    # Les `**` balisent les mots mis en valeur dans les titres : `*` est une
+    # ponctuation et passerait le filtre ci-dessous jusqu'à la voix.
+    text = text.replace("**", "")
     # Supprime les hashtags (#IA, #DataScience...)
     text = re.sub(r"#\S+", "", text)
     # Supprime les URLs
@@ -720,7 +724,8 @@ def generer_audio_qwen3(
         raise ValueError("Aucun segment à synthétiser")
     output_dir.mkdir(parents=True, exist_ok=True)
     fichiers = [output_dir / f"{seg_id}.mp3" for seg_id, _, _ in segments]
-    wan2gp.synthetiser([wan2gp.prononcer(texte) for _, texte, _ in segments],
+    termes = script.get("termes_anglais", [])
+    wan2gp.synthetiser([wan2gp.prononcer(texte, termes) for _, texte, _ in segments],
                        fichiers, voice)
     return concatenate_segments(fichiers, final_path), fichiers
 
@@ -809,16 +814,19 @@ def generer_audio_groupe(
                     lot, cible, voice, fournisseur, Path(travail), rang
                 )
             except QuotaEpuise as e:
-                # **La bascule n'est tolérée que sur le premier lot.** Changer de
-                # moteur après coup mélangerait deux voix dans la même bande son,
-                # défaut qui ne s'entend qu'à la lecture — c'est précisément ce
-                # que le regroupement était censé rendre impossible. Tant qu'aucun
-                # octet d'audio n'existe, la décision reste sûre.
-                if not _repli_actif(fallback) or rang > 0:
+                if not _repli_actif(fallback):
+                    raise
+                # **Un repli qui continuerait lot par lot n'est toléré que sur le
+                # premier lot** : changer de moteur après coup mélangerait deux
+                # voix dans la même bande son, défaut qui ne s'entend qu'à la
+                # lecture. Qwen3 échappe à la règle, car il **reprend toute la
+                # narration** et abandonne les lots déjà produits : aucun mélange
+                # possible, quel que soit le lot où le quota tombe. Observé le
+                # 24/10/2026 : Gemini épuisé au deuxième lot, et la règle, écrite
+                # pour edge et NVIDIA, refusait un repli qui était sûr.
+                if rang > 0 and _moteur_repli() != "qwen3":
                     raise
                 fournisseur, voice = _basculer(e)
-                # Qwen3 ne se lotit pas : il reprend toute la narration par son
-                # propre chemin, un fichier par segment.
                 if fournisseur == "qwen3":
                     return generer_audio_qwen3(script, output_dir, final_path, voice)
                 _synthetiser_ou_scinder(

@@ -602,6 +602,19 @@ def step_llm(sujet: "Sujet | str", provider: str | None = None) -> Path:
     return path
 
 
+def step_scenes(script_path: Path) -> "dict[str, Path]":
+    """
+    Étape 2 bis : scènes animées de la mascotte, pour les slides `scene`.
+
+    Locale uniquement (Wan2GP) : sous Airflow, le prompt ne propose pas ce type,
+    et une scène sans Wan2GP laisse la slide sans figure, avec un WARNING. Les
+    scènes générées sont mises en cache : une reprise ne les régénère pas.
+    """
+    from content.scenes import preparer_scenes
+
+    return preparer_scenes(script_path)
+
+
 def step_images(script_path: Path) -> "dict[str, Path]":
     """
     Étape 2 : illustrations des slides dépourvues de schéma.
@@ -615,7 +628,7 @@ def step_images(script_path: Path) -> "dict[str, Path]":
     """
     try:
         import json
-        from content.images import attacher_figures_source, fetch_slide_images
+        from content.images import attacher_figures_source
 
         with open(script_path, encoding="utf-8") as f:
             script = json.load(f)
@@ -645,7 +658,11 @@ def step_images(script_path: Path) -> "dict[str, Path]":
             with open(script_path, "w", encoding="utf-8") as f:
                 json.dump(script, f, ensure_ascii=False, indent=2)
 
-        return fetch_slide_images(script, output_dir)
+        # Plus d'illustration de fond : l'habillage du 27/10/2026 (dégradé et
+        # grille) ne les affiche plus, et les
+        # générer coûtait ~10 min de GPU par vidéo pour rien. `make images` et
+        # `fetch_slide_images` restent pour y revenir.
+        return {}
     except Exception as e:
         logger.warning(
             "Étape images ignorée : %s — les slides garderont leur dégradé", e
@@ -830,6 +847,7 @@ def run_pipeline(
     # ── 2. Images Pexels ──────────────────────────────────────────────────────
     _step(2, "Téléchargement images Pexels")
     images = step_images(script_path)
+    step_scenes(script_path)
 
     # ── 3. TTS ────────────────────────────────────────────────────────────────
     # La voix passe avant l'image : chaque slide doit durer exactement le temps

@@ -14,8 +14,10 @@ import content.agent as agent
 import content.llm as llm
 import content.render as render
 import scraper.figures as figures
-from automation.graphe_script import MAX_CORRECTIONS, faits_non_traces, produire_script
+from automation.graphe_script import (MAX_CORRECTIONS, faits_non_traces, figures_creuses,
+                                      produire_script)
 from automation.workflow import Sujet
+from media import wan2gp
 
 SOURCE = ("Diffusion models reach an FID of 3.17 on CIFAR-10, trained on 7,500 "
           "images with 10,000 steps. GANs were the baseline. Released in 2020.")
@@ -51,6 +53,37 @@ def test_petits_entiers_pluriels_et_sigles_admis_ne_sont_pas_des_faits():
     assert faits_non_traces(s, SOURCE) == []
 
 
+# ── Figures creuses ───────────────────────────────────────────────────────────
+
+def _avec(*graphiques: dict) -> dict:
+    return {"slides": [{"titre": f"S{i}", "graphique": g} for i, g in enumerate(graphiques)]}
+
+
+def test_un_stat_sans_chiffre_et_une_comparaison_binaire_sont_refuses():
+    """Les deux défauts du script « claude » du 26/10/2026."""
+    s = _avec({"type": "stat", "donnees": {"valeur": "Contexte étendu"}},
+              {"type": "comparaison", "donnees": {"items": [
+                  {"label": "Standard", "valeur": 1}, {"label": "Refus", "valeur": 0}]}})
+    defauts = figures_creuses(s, scenes_offertes=False)
+    assert len(defauts) == 2
+    assert "S0" in defauts[0] and "S1" in defauts[1]
+
+
+def test_de_vraies_mesures_passent():
+    s = _avec({"type": "stat", "donnees": {"valeur": "76,8%"}},
+              {"type": "comparaison", "donnees": {"items": [
+                  {"label": "A", "valeur": 76.8}, {"label": "B", "valeur": "94"}]}})
+    assert figures_creuses(s, scenes_offertes=False) == []
+
+
+def test_une_liste_sans_scene_n_est_refusee_que_si_wan2gp_est_la():
+    s = _avec({"type": "liste", "donnees": {"items": ["a", "b"]}})
+    assert figures_creuses(s, scenes_offertes=False) == []
+    assert len(figures_creuses(s, scenes_offertes=True)) == 1
+    s["slides"].append({"titre": "Robot", "graphique": {"type": "scene", "donnees": {}}})
+    assert figures_creuses(s, scenes_offertes=True) == []
+
+
 # ── Boucle de correction ──────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -74,6 +107,7 @@ def bac_a_sable(monkeypatch):
     monkeypatch.setattr(llm, "reformulate_article", rediger)
     monkeypatch.setattr(render, "defauts_mise_en_page", mesurer)
     monkeypatch.setattr(figures, "figures_de", lambda *_: [])
+    monkeypatch.setattr(wan2gp, "absence", lambda: "hors du bac à sable")
     return redactions, scenario
 
 
