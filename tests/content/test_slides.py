@@ -14,7 +14,6 @@ import math
 import re
 
 from content.slides import (
-    ACCENT,
     CADRE_MARGE,
     CANEVAS_H,
     ICONES,
@@ -486,8 +485,8 @@ def test_stat_arc_et_rail_sont_tous_deux_traces():
     """Un arc court sans cercle de référence ne se compare à rien et cesse de se
     lire comme une part — même raison que le rail des barres de `comparaison`."""
     svg = _graphic_svg({"type": "stat", "donnees": {"valeur": "20%"}})
-    assert 'class="remplit anim"' in svg    # l'arc, en accent
-    assert svg.count("<circle") == 2        # le rail neutre derrière
+    assert 'class="remplit anim"' in svg    # l'arc, en dégradé
+    assert '<circle class="rail"' in svg    # le tour entier derrière
 
 
 def test_stat_cent_pour_cent_reste_un_cercle_tronque():
@@ -504,21 +503,23 @@ def test_stat_zero_pour_cent_ne_trace_aucun_arc():
     posé sur le rail, en contradiction avec la valeur affichée."""
     svg = _graphic_svg({"type": "stat", "donnees": {"valeur": "0%"}})
     assert 'class="remplit anim"' not in svg
-    assert svg.count("<circle") == 1        # le rail seul
+    assert 'class="tete' not in svg         # ni tête lumineuse posée sur un arc nul
+    assert '<circle class="rail"' in svg
 
 
 def test_stat_sans_pourcentage_garde_lanneau_entier():
     donnees = {"valeur": "175 Md", "description": "de paramètres"}
     svg = _graphic_svg({"type": "stat", "donnees": donnees})
     assert 'class="remplit anim"' not in svg
-    assert svg.count("<circle") == 1
     assert "--arc" not in svg
+    assert 'class="allume' not in svg       # aucune graduation ne prétend mesurer
 
 
 def test_stat_affiche_toujours_valeur_et_description():
     donnees = {"valeur": "95%", "description": "de précision"}
     svg = _graphic_svg({"type": "stat", "donnees": donnees})
-    assert "95%" in svg
+    # Le signe % est un tspan réduit, collé au nombre.
+    assert re.search(r">95<tspan[^>]*>%</tspan>", svg)
     assert "de précision" in svg
 
 
@@ -531,36 +532,40 @@ def test_stat_tour_vaut_la_circonference_du_rayon():
     assert tour == pytest.approx(2 * math.pi * rayon, rel=1e-3)
 
 
-# ── Repères d'angle ──────────────────────────────────────────────────────────
+# ── Repère des schémas ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("gtype", TYPES_FIGURES)
-def test_chaque_figure_porte_quatre_reperes(gtype):
+def test_un_schema_dessine_dans_la_zone_de_reference(gtype):
+    """
+    Le viewBox couvre toujours la zone de `design/schemas/reference.html`,
+    plus la bande des halos, quelle que soit la taille demandée : la figure
+    dessine dans un repère fixe et le navigateur la met à l'échelle.
+    """
+    from content.schemas import ZONE_H, ZONE_W
+
     svg = _graphic_svg({"type": gtype, "donnees": DONNEES_VALIDES[gtype]})
-    assert svg.count('opacity="0.28"') == 4
-
-
-def test_les_reperes_sortent_de_la_zone_utile():
-    """
-    Les repères vivent dans une bande prélevée sur le canevas, jamais dans
-    l'espace des figures : `etapes` trace ses cadres de 0 à w, une équerre posée
-    dans son repère tomberait exactement sur l'angle du premier cadre.
-    """
-    svg = _graphic_svg({"type": "etapes", "donnees": DONNEES_VALIDES["etapes"]})
     vue = re.search(r'viewBox="(-?\d+) (-?\d+) (\d+) (\d+)"', svg)
     x, y, largeur, hauteur = (int(g) for g in vue.groups())
-    assert x == -CADRE_MARGE and y == -CADRE_MARGE
-    # Le document couvre la zone utile plus la bande, des deux côtés.
-    assert largeur == 970 and hauteur == CANEVAS_H
+    assert (x, y) == (-CADRE_MARGE, -CADRE_MARGE)
+    assert (largeur, hauteur) == (ZONE_W + 2 * CADRE_MARGE, ZONE_H + 2 * CADRE_MARGE)
+    # Le document, lui, prend la taille demandée.
+    assert 'width="970"' in svg and f'height="{CANEVAS_H}"' in svg
 
 
-def test_la_zone_utile_est_reduite_de_la_bande():
-    """La figure doit rétrécir, sinon les repères la recouvriraient."""
-    svg = _graphic_svg({"type": "etapes", "donnees": {"items": ["Seul"]}}, w=970)
-    largeur_cadre = int(re.search(r'<rect x="0" y="\d+" width="(\d+)"', svg).group(1))
-    assert largeur_cadre == 970 - 2 * CADRE_MARGE
+def test_la_slide_donne_la_zone_haute_aux_schemas():
+    """Dans la bande large, un schéma tenait en 950 × 550 et laissait 300 px
+    vides au-dessus des sous-titres."""
+    from content.slides import _slide_html
+
+    schema = _slide_html({"titre": "T", "contenu": "c",
+                          "graphique": {"type": "etapes", "donnees": DONNEES_VALIDES["etapes"]}}, 1)
+    terminal = _slide_html({"titre": "T", "contenu": "c", "graphique": {
+        "type": "terminal", "donnees": {"lignes": [{"cmd": "ls"}]}}}, 1)
+    assert 'class="graphic haute anim"' in schema
+    assert 'class="graphic anim"' in terminal
 
 
-def test_les_reperes_nintroduisent_pas_de_groupe_transforme():
+def test_les_schemas_nintroduisent_pas_de_groupe_transforme():
     """Un `<g transform>` d'enveloppe fausserait le comptage d'icônes, que ce
     motif sert justement à repérer dans plusieurs tests."""
     svg = _graphic_svg({"type": "etapes", "donnees": {"items": ["Sans icône"]}})
@@ -636,14 +641,16 @@ def test_frise_accepte_des_items_en_texte_simple():
 def test_frise_relie_les_jalons_par_une_colonne():
     """Sans colonne, ce sont des lignes empilées et non une chronologie."""
     svg = _graphic_svg({"type": "frise", "donnees": DONNEES_VALIDES["frise"]})
-    assert svg.count("<line") >= 1
-    assert svg.count("<circle") == 3      # un jalon par item
+    assert 'class="coule anim"' in svg    # la colonne, où le temps s'écoule
+    # Un jalon par item, et l'onde du plus récent.
+    assert svg.count("<circle") == 3 + svg.count('class="onde anim"')
+    assert svg.count('class="onde anim"') == 1
 
 
 def test_frise_jalon_unique_na_pas_de_colonne():
     """Une colonne reliant un seul jalon pendrait dans le vide."""
     svg = _graphic_svg({"type": "frise", "donnees": {"items": [{"date": "2024", "texte": "Seul"}]}})
-    assert "<line" not in svg
+    assert "coule" not in svg
 
 
 # ── embranchement : une question, plusieurs issues ───────────────────────────
@@ -652,7 +659,7 @@ def test_embranchement_rend_question_et_branches():
     svg = _graphic_svg({"type": "embranchement", "donnees": DONNEES_VALIDES["embranchement"]})
     assert "étiquetées" in svg
     assert "supervisé" in svg
-    assert svg.count("<rect") == 3        # la question et ses deux issues
+    assert svg.count('class="carte"') == 3   # la question et ses deux issues
 
 
 def test_embranchement_sans_question_est_vide():
@@ -670,14 +677,14 @@ def test_embranchement_avec_une_seule_branche_est_vide():
 def test_embranchement_a_trois_branches():
     donnees = {"question": "Quel type ?", "branches": ["Un", "Deux", "Trois"]}
     svg = _graphic_svg({"type": "embranchement", "donnees": donnees})
-    assert svg.count("<rect") == 4
+    assert svg.count('class="carte"') == 4
 
 
 def test_embranchement_plafonne_a_trois_branches():
     """Au-delà, les cadres deviennent trop étroits pour porter un libellé."""
     donnees = {"question": "Quel type ?", "branches": ["A", "B", "C", "D", "E"]}
     svg = _graphic_svg({"type": "embranchement", "donnees": donnees})
-    assert svg.count("<rect") == 4
+    assert svg.count('class="carte"') == 4
     assert ">E<" not in svg
 
 
@@ -690,23 +697,20 @@ def test_venn_rend_les_deux_ensembles_et_le_commun():
     assert "Apprendre" in svg
 
 
-# Le marqueur de flèche partagé porte la couleur d'accent dans les <defs> de
-# toute figure : c'est donc le texte accentué qu'il faut chercher, pas la couleur.
-TEXTE_ACCENTUE = f'fill="{ACCENT}" font-size'
 
-
-def test_venn_zone_commune_porte_seule_laccent():
+def test_venn_zone_commune_porte_seule_le_degrade():
     """Les deux cercles sont les prémisses, le recouvrement la conclusion."""
     svg = _graphic_svg({"type": "venn", "donnees": DONNEES_VALIDES["venn"]})
-    assert svg.count(f'stroke="{ACCENT}"') == 0     # aucun cercle accentué
-    assert TEXTE_ACCENTUE in svg                    # le libellé commun, si
+    cercles = re.findall(r"<circle [^>]*>", svg)
+    assert all("url(#gA)" not in c for c in cercles)    # aucun cercle en dégradé
+    assert re.search(r'<path class="commun"[^>]*fill="url\(#gA\)"', svg)
 
 
 def test_venn_sans_commun_reste_lisible():
-    """Deux ensembles disjoints restent une figure valide, sans texte au centre."""
+    """Deux ensembles disjoints restent une figure valide, sans zone commune."""
     svg = _graphic_svg({"type": "venn", "donnees": {"gauche": "A", "droite": "B"}})
     assert svg.count("<circle") == 2
-    assert TEXTE_ACCENTUE not in svg
+    assert 'class="commun"' not in svg
 
 
 def test_venn_sans_second_ensemble_est_vide():
@@ -892,7 +896,8 @@ def test_figures_cadencees_animent_avec_datation(gtype):
     svg = _graphic_svg(
         {"type": gtype, "donnees": DONNEES_VALIDES[gtype]}, mots=mots, duree_ms=8000
     )
-    assert 'class="parait anim"' in svg
+    # Le geste d'entrée varie (surgir, glisser, tomber) : seule la classe compte.
+    assert re.search(r'class="parait( \w+)? anim"', svg)
 
 
 def test_stat_nest_jamais_cadencee():
@@ -910,7 +915,7 @@ def test_sans_duree_ms_reste_statique(gtype):
     même si des mots datés sont fournis par erreur."""
     mots = [{"mot": "x", "debut": 0.0, "fin": 0.3}]
     svg = _graphic_svg({"type": gtype, "donnees": DONNEES_VALIDES[gtype]}, mots=mots, duree_ms=0)
-    assert 'class="parait anim"' not in svg
+    assert 'class="parait' not in svg
 
 
 # ── plan_slides (nécessaire aux figures cadencées en contexte réel) ──────────

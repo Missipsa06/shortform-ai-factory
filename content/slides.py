@@ -19,45 +19,22 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# ── Charte des schémas ────────────────────────────────────────────────────────
+# ── Constantes partagées des figures ─────────────────────────────────────────
 #
-# Les tailles sont calibrées pour un canevas de 970 px de large affiché en pleine
-# largeur : un libellé à 32 px y paraissait plus petit que la légende du dessous,
-# ce qui inversait la hiérarchie visuelle. La police est celle embarquée dans le
-# dépôt, sinon le texte des schémas échapperait au rendu reproductible.
-#
-# Registre retenu : schéma technique épuré. Trois règles, qui suffisent à tenir
-# la cohérence d'une figure à l'autre :
-#
-#   1. Une seule épaisseur de trait, des jointures arrondies.
-#   2. Des formes ouvertes — le fond reste celui de la slide. Les cartes pleines
-#      empilaient un second fond sur le premier et alourdissaient la figure.
-#   3. Un seul accent coloré par figure, tout le reste en neutre. Faire tourner
-#      la palette sur cinq teintes donnait un dessin bariolé, pas un schéma.
+# Les onze schémas vivent dans `content/schemas.py`, dans la charte « verre
+# lumineux » de `design/schemas/reference.html`. Restent ici les couleurs et
+# les outils de texte qu'ils partagent avec `figure_source`, et la police
+# embarquée sans laquelle le texte des figures échapperait au rendu
+# reproductible.
 
 POLICE_SVG = "'Lecture', sans-serif"
 
-# Conservée pour les figures pas encore reprises (comparaison, neurones).
-PALETTE = ["#00D4FF", "#7B2FFF", "#FF6B6B", "#4EC94E", "#FFC107"]
-FOND_CARTE = "#161630"
-
-
-# Hauteur du canevas des schémas, ajustée à la place restante une fois les zones
-# sûres de TikTok réservées (voir ZONE_SURE_* plus bas). Un canevas plus haut que
-# son conteneur serait réduit à l'affichage et le texte des figures rétrécirait
-# d'autant : c'est le rapport de forme qui compte, pas la valeur absolue.
+# Hauteur par défaut du canevas d'une figure : c'est le rapport de forme qui
+# compte, le document SVG se met à l'échelle de la place que la slide lui laisse.
 CANEVAS_H = 900
 
-TRAIT = 3
-# Seule entorse à la règle « une épaisseur unique », et elle a un précédent : les
-# barres de `comparaison` font déjà 30 px de haut. L'épaisseur est réservée à ce
-# qui *porte une mesure*, jamais à ce qui l'encadre. Un anneau de progression à
-# 3 px sur un rayon de 370 est une ligne de cheveu : la part y est vraie mais
-# illisible en défilement, ce qui revient à ne pas l'avoir dessinée.
-TRAIT_ANNEAU = 16
-RAYON = 22
 ACCENT = "#00D4FF"
-NEUTRE = "#5C6A8A"       # traits et cadres secondaires
+NEUTRE = "#5C6A8A"       # traits secondaires, crédit d'une figure source
 TEXTE = "#EAEEF7"
 TEXTE_DOUX = "#95A1BC"
 
@@ -77,121 +54,24 @@ def _echapper(valeur: object) -> str:
     )
 
 
-# Bande réservée tout autour de la zone utile, où se posent les repères d'angle.
-# Les figures n'en savent rien et continuent de dessiner dans un repère qui part
-# de (0, 0) : c'est le viewBox qui décale l'origine. Indispensable, car plusieurs
-# d'entre elles occupent toute leur largeur — les cadres d'`etapes`, les barres
-# de `comparaison`, la question d'`embranchement` — et un repère posé dans leur
-# espace tomberait exactement sur l'angle de leur tracé.
+# Bande réservée tout autour de la zone utile : les halos des figures y
+# débordent sans être coupés par le bord du document.
 CADRE_MARGE = 24
-
-
-def _reperes(w: int, h: int) -> str:
-    """
-    Quatre équerres d'angle, dans le registre du plan technique.
-
-    Le seul ornement du module, et il ne porte aucune information : il situe la
-    figure dans un cadre. D'où l'opacité très basse et la couleur neutre — plus
-    affirmées, les équerres concurrenceraient le trait de la figure au lieu de
-    l'encadrer, et la charte n'admet qu'un accent par schéma.
-    """
-    bras, i = 32, TRAIT // 2 + 1
-    x0, y0 = -CADRE_MARGE + i, -CADRE_MARGE + i
-    x1, y1 = w + CADRE_MARGE - i, h + CADRE_MARGE - i
-    coins = ((x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1))
-    return "\n".join(
-        f'  <path d="M {x} {y + sy * bras} L {x} {y} L {x + sx * bras} {y}" '
-        f'fill="none" stroke="{NEUTRE}" stroke-width="{TRAIT}" stroke-linecap="round" '
-        f'stroke-linejoin="round" opacity="0.28"/>'
-        for x, y, sx, sy in coins
-    )
 
 
 def _svg(w: int, h: int, corps: str, defs: str = "") -> str:
     """
-    Enveloppe SVG commune : pointes de flèche partagées et repères d'angle.
+    Enveloppe SVG de `figure_source`.
 
-    `w` et `h` sont les dimensions **utiles**, celles dans lesquelles la figure
-    dessine. Le document est plus grand de `CADRE_MARGE` de chaque côté, et son
-    `viewBox` décale l'origine d'autant : la figure garde son repère habituel
-    sans rien savoir de la marge. Un groupe translaté aurait fait la même chose,
-    mais aurait ajouté un `<g transform>` que les icônes sont seules à produire.
+    `w` et `h` sont les dimensions **utiles**. Le document est plus grand de
+    `CADRE_MARGE` de chaque côté, et son `viewBox` décale l'origine d'autant :
+    la figure garde son repère habituel sans rien savoir de la marge.
     """
     total_w, total_h = w + 2 * CADRE_MARGE, h + 2 * CADRE_MARGE
     return f"""<svg width="{total_w}" height="{total_h}" viewBox="{-CADRE_MARGE} {-CADRE_MARGE} {total_w} {total_h}" xmlns="http://www.w3.org/2000/svg">
-{_reperes(w, h)}
-  <defs>
-    <marker id="pointe" viewBox="0 0 10 10" refX="9" refY="5"
-            markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="{NEUTRE}"/>
-    </marker>
-    <marker id="pointe-accent" viewBox="0 0 10 10" refX="9" refY="5"
-            markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="{ACCENT}"/>
-    </marker>{defs}
-  </defs>
+  <defs>{defs}</defs>
 {corps}
 </svg>"""
-
-
-def _parait(corps: str, delai_ms: "int | None") -> str:
-    """
-    Enveloppe un groupe d'éléments pour qu'il paraisse d'un bloc à l'instant donné.
-
-    Partagé entre toutes les figures cadencées : un cadre, une ligne de liste ou
-    un bloc de comparaison doivent surgir comme une unité, jamais élément par
-    élément, sinon la construction paraît hachée au lieu de suivre la voix.
-    """
-    if delai_ms is None:
-        return corps
-    return f'  <g class="parait anim" style="animation-delay:{delai_ms}ms">\n{corps}\n  </g>'
-
-
-def _boite(x: int, y: int, w: int, h: int, label: str,
-           accent: bool = False, indice: "int | None" = None,
-           delai_ms: "int | None" = None, icone: "str | None" = None) -> str:
-    """
-    Cadre ouvert contenant un libellé centré.
-
-    Args:
-        x, y, w, h: Géométrie du cadre
-        label:      Texte affiché, échappé ici
-        accent:     Tracer le cadre dans la couleur d'accent
-        indice:     Numéro affiché dans une pastille, en tête de cadre
-        icone:      Pictogramme affiché en tête du cadre côté droit, facultatif
-    """
-    couleur = ACCENT if accent else NEUTRE
-    cy = y + h // 2
-    marge = 34
-    x_texte = x + marge
-    parts = [
-        f'  <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{RAYON}" fill="none" '
-        f'stroke="{couleur}" stroke-width="{TRAIT}" stroke-linejoin="round"/>'
-    ]
-    if icone:
-        # Toujours à droite, jamais entre la pastille et le texte : leur ordre de
-        # lecture ne doit pas dépendre de la présence ou non d'un pictogramme.
-        taille = min(h - 28, 64)
-        parts.append(_icone(icone, x + w - 30 - taille / 2, cy, taille, couleur))
-    if indice is not None:
-        r = 26
-        cx = x + marge + r
-        parts.append(
-            f'  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" '
-            f'stroke="{couleur}" stroke-width="{TRAIT}"/>'
-            f'\n  <text x="{cx}" y="{cy + 13}" text-anchor="middle" fill="{couleur}" '
-            f'font-size="34" font-weight="700" font-family="{POLICE_SVG}">{indice}</text>'
-        )
-        x_texte = cx + r + 28
-    parts.append(
-        f'  <text x="{x_texte}" y="{cy + 16}" fill="{TEXTE}" font-size="46" '
-        f'font-weight="600" font-family="{POLICE_SVG}">{_echapper(label)}</text>'
-    )
-    corps = "\n".join(parts)
-
-    # Le groupe entier surgit d'un coup : cadre, pastille et libellé forment une
-    # unité, les animer séparément donnerait un empilement de mouvements.
-    return _parait(corps, delai_ms)
 
 
 # ── Pictogrammes ─────────────────────────────────────────────────────────────
@@ -553,23 +433,6 @@ def _cadence(
     ]
 
 
-def _fleche(x1: int, y1: int, x2: int, y2: int, delai_ms: "int | None" = None) -> str:
-    """Segment terminé par une pointe, dans la couleur neutre."""
-    return (
-        f'  <line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{NEUTRE}" '
-        f'stroke-width="{TRAIT}" stroke-linecap="round" marker-end="url(#pointe)"'
-        + (
-            # Le trait se dessine de son origine vers sa pointe : `stroke-dashoffset`
-            # animé de sa longueur vers zéro. La longueur est calculée ici plutôt
-            # que mesurée dans le navigateur, la flèche étant toujours droite.
-            f' class="trace anim" style="--long:{abs(y2 - y1) + abs(x2 - x1)};'
-            f'animation-delay:{delai_ms}ms"'
-            if delai_ms is not None else ""
-        )
-        + "/>"
-    )
-
-
 def _fraction(valeur: object) -> "float | None":
     """
     Part de l'anneau à remplir, déduite de la valeur affichée.
@@ -619,773 +482,6 @@ def _instant_du_chiffre(valeur: object, mots: "list[dict] | None") -> "int | Non
         if re.sub(r"\D", "", str(mot.get("mot", ""))) == chiffres:
             return int(mot.get("debut", 0) * 1000)
     return None
-
-
-def _svg_stat(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Un chiffre clé, cerclé d'un anneau ouvert.
-
-    Le halo et le disque plein d'une version précédente empilaient deux fonds sur
-    celui de la slide. Ici l'anneau n'est qu'un trait : le chiffre porte seul,
-    ce qui est bien son rôle.
-
-    **L'anneau mesure la valeur au lieu de l'encadrer.** Quand celle-ci porte son
-    propre dénominateur, il se remplit jusqu'à cette part et devient la figure
-    elle-même : « 12 % » et « 95 % » donnaient auparavant exactement le même
-    dessin, un cercle entier dans les deux cas. Le chiffre portait donc seul toute
-    l'information et le cercle n'était que décoratif — c'est ce qui faisait
-    paraître cette figure plus pauvre que les autres, alors qu'elle occupe autant
-    de place.
-
-    Sans dénominateur, l'anneau reste entier : voir `_fraction`.
-
-    **Le remplissage tombe sur le chiffre prononcé.** Fixé à 260 ms, il se
-    jouait à l'entrée de la slide, quand la voix n'avait encore rien dit : le
-    geste qui montre la part précédait la part elle-même. Retrouvé dans la
-    datation des mots, il coïncide avec elle, et le chiffre marque l'instant par
-    un léger rebond. Sans datation, on garde 260 ms et aucun rebond.
-    """
-    brut = donnees.get("valeur", "?")
-    valeur = _echapper(brut)
-    description = _echapper(donnees.get("description", ""))
-    part = _fraction(brut)
-    instant = _instant_du_chiffre(brut, mots)
-    rebond = (
-        "" if instant is None
-        else f' class="rebond anim" style="animation-delay:{instant}ms"'
-    )
-
-    # La légende est placée sous l'anneau : sa hauteur est réservée AVANT de
-    # calculer le rayon, sinon le texte sort du canevas et se retrouve tronqué.
-    marge_legende = 120
-    # Plafonné : un anneau qui touche les bords n'a plus de vide autour de lui,
-    # et c'est ce vide qui fait porter le chiffre.
-    r = min(370, min(w, h - marge_legende) // 2 - 8)
-    hauteur_totale = 2 * r + marge_legende
-    cy = (h - hauteur_totale) // 2 + r
-    cx = w // 2
-    # Le corps se déduit de la largeur disponible dans l'anneau, pas d'un palier
-    # sur le nombre de caractères : « 100% » débordait là où « 95% » tenait.
-    # Une glyphe de Manrope occupe environ 0,62 em.
-    #
-    # Le dégagement dépend de ce que l'anneau est devenu : porteur d'une part, son
-    # trait épais est à lire et le « % » de « 50% » venait le frôler, d'où un recul
-    # du chiffre. Resté simple cadre, il n'impose rien — reculer y creuserait du
-    # vide sans rien protéger.
-    degagement = 2.45 if part is not None else 2.74
-    corps = min(int(r * 1.1), int(degagement * r / max(len(valeur), 1)))
-
-    if part is None:
-        anneau = [
-            f'  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" '
-            f'stroke="{ACCENT}" stroke-width="{TRAIT}"/>'
-        ]
-    else:
-        tour = 2 * math.pi * r
-        arc = tour * part
-        # Le rail porte le tour entier : un arc de 20 % sans cercle de référence
-        # ne se compare à rien et cesse d'être lisible comme une part. Même
-        # raison que le rail des barres de `comparaison`.
-        anneau = [
-            f'  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" '
-            f'stroke="{NEUTRE}" stroke-width="{TRAIT_ANNEAU}" opacity="0.22"/>'
-        ]
-        # Un arc plus court que l'épaisseur du trait n'est pas dessiné : ses
-        # extrémités arrondies le rendraient plus long qu'il n'est, et une part
-        # infime paraîtrait alors valoir le pour cent.
-        if arc > TRAIT_ANNEAU:
-            # `rotate(-90)` amène le départ du tracé de 3 h à midi : une part se
-            # lit depuis le haut, dans le sens horaire. Le tracé est un cercle
-            # entier tronqué par `stroke-dasharray`, et non un `path A` : un arc
-            # de 100 % rejoindrait son point de départ et ne dessinerait rien.
-            anneau.append(
-                f'  <circle class="remplit anim" cx="{cx}" cy="{cy}" r="{r}" fill="none" '
-                f'stroke="{ACCENT}" stroke-width="{TRAIT_ANNEAU}" stroke-linecap="round" '
-                f'transform="rotate(-90 {cx} {cy})" '
-                f'style="--arc:{arc:.1f};--tour:{tour:.1f};'
-                f'animation-delay:{260 if instant is None else instant}ms"/>'
-            )
-
-    return _svg(w, h, "\n".join(anneau) + f"""
-  <text x="{cx}" y="{cy + corps // 3}" text-anchor="middle" fill="{ACCENT}"
-        font-size="{corps}" font-weight="700" font-family="{POLICE_SVG}"{rebond}>{valeur}</text>
-  <text x="{cx}" y="{cy + r + 76}" text-anchor="middle" fill="{TEXTE_DOUX}"
-        font-size="48" font-family="{POLICE_SVG}">{description}</text>""")
-
-
-def _svg_etapes(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Enchaînement d'étapes : cadres ouverts reliés par des flèches.
-
-    La dernière étape porte l'accent — c'est le résultat, donc le point d'arrivée
-    du regard. Les précédentes restent neutres pour que la lecture progresse au
-    lieu de s'éparpiller.
-
-    Quand la datation des mots est disponible, la figure **se construit au fil de
-    la narration** : chaque cadre paraît lorsque la voix le nomme, chaque flèche
-    se trace juste après. Sans elle, tout apparaît sur la première moitié de la
-    slide, comme avant.
-    """
-    items = donnees.get("items", [])[:4]
-    n = len(items)
-    if n == 0:
-        return ""
-
-    # Cadres compacts, liaisons longues. L'inverse — de gros blocs séparés par
-    # des flèches courtes — se lit comme une liste de cartes empilées, pas comme
-    # un enchaînement : c'est la liaison qui porte l'idée de circulation.
-    boite_h, liaison, y0 = _repartir(h, n, hauteur_max=168, ratio_ecart=1.6)
-    instants = _cadence(items, mots, duree_ms) if duree_ms else [None] * n
-
-    parts = []
-    for i, item in enumerate(items):
-        texte, icone = _item(item)
-        y = y0 + i * (boite_h + liaison)
-        parts.append(_boite(0, y, w, boite_h, texte,
-                            accent=(i == n - 1), indice=i + 1,
-                            delai_ms=instants[i], icone=icone))
-        if i < n - 1:
-            depart = y + boite_h + 14
-            # La flèche se trace après le cadre qu'elle quitte, avant celui
-            # qu'elle rejoint : elle porte le passage de l'un à l'autre.
-            delai = None if instants[i] is None else instants[i] + 420
-            parts.append(
-                _fleche(w // 2, depart, w // 2, depart + liaison - 30, delai)
-            )
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_comparaison(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Comparaison de valeurs : libellé, valeur, barre.
-
-    Seule la valeur la plus élevée porte l'accent — c'est le résultat de la
-    comparaison, donc la seule information que le regard doit trouver seul. Faire
-    tourner la palette colorait des barres sans rien hiérarchiser.
-    """
-    items = donnees.get("items", [])[:4]
-    n = len(items)
-    if n == 0:
-        return ""
-
-    valeurs = [it.get("valeur", 0) for it in items]
-    max_val = max(valeurs, default=100) or 100
-
-    # Des valeurs toutes égales ne comparent rien : accentuer « la plus élevée »
-    # désignerait alors tout le monde et inventerait une hiérarchie absente. Le
-    # LLM produit ce cas quand il compare des notions non quantifiables.
-    departage = len(set(valeurs)) > 1
-    if not departage:
-        logger.warning(
-            "Comparaison sans écart : %d valeurs identiques (%s). La figure "
-            "n'oppose rien — un autre type de graphique conviendrait mieux.",
-            len(valeurs), valeurs[0] if valeurs else "?",
-        )
-
-    # Le libellé passe au-dessus de sa barre : sur un cadre vertical, une colonne
-    # de libellés à gauche vole la largeur utile à la comparaison elle-même.
-    bloc_h, ecart, y0 = _repartir(h, n, hauteur_max=190, ratio_ecart=0.32)
-    barre_h = 30
-    instants = _cadence(items, mots, duree_ms) if duree_ms else [None] * n
-
-    parts = []
-    for i, item in enumerate(items):
-        y = y0 + i * (bloc_h + ecart)
-        val = item.get("valeur", 0)
-        couleur = ACCENT if (departage and val == max_val) else NEUTRE
-        bar_w = max(int(w * (val / max_val)), 12)
-        # La barre pousse juste après l'apparition de son bloc : le libellé se
-        # lit d'abord, la longueur ensuite. Sans cadence, elle reste posée.
-        pousse = (
-            "" if instants[i] is None
-            else f' class="pousse anim" style="animation-delay:{instants[i] + 180}ms"'
-        )
-        bloc = (
-            f'  <text x="0" y="{y + 46}" fill="{TEXTE}" font-size="46" '
-            f'font-weight="600" font-family="{POLICE_SVG}">{_echapper(item.get("label", ""))}</text>\n'
-            f'  <text x="{w}" y="{y + 46}" text-anchor="end" fill="{couleur}" font-size="46" '
-            f'font-weight="700" font-family="{POLICE_SVG}">{_echapper(val)}</text>\n'
-            # Le rail marque la valeur maximale : sans lui, une barre courte ne se
-            # compare à rien et l'écart cesse d'être lisible.
-            f'  <line x1="0" y1="{y + 82}" x2="{w}" y2="{y + 82}" stroke="{NEUTRE}" '
-            f'stroke-width="1" opacity="0.35"/>\n'
-            f'  <rect x="0" y="{y + 82 - barre_h // 2}" width="{bar_w}" height="{barre_h}" '
-            f'rx="{barre_h // 2}" fill="{couleur}"{pousse}/>'
-        )
-        parts.append(_parait(bloc, instants[i]))
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_liste(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Points clés : filet d'accent, libellé, règle de séparation.
-
-    Pas de cadre ici, contrairement aux étapes. Une liste n'a ni ordre ni
-    circulation : l'encadrer imiterait un schéma sans en être un. Le filet
-    vertical suffit à rattacher chaque ligne à l'ensemble.
-    """
-    items = [_item(it) for it in donnees.get("items", [])[:5]]
-    n = len(items)
-    if n == 0:
-        return ""
-    instants = _cadence(items, mots, duree_ms) if duree_ms else [None] * n
-
-    # Icônes réparties par tout ou rien : un mélange (certains items pictogrammés,
-    # d'autres non) déciderait sans raison de leur poids visuel respectif. La
-    # colonne d'icône n'est réservée — et le texte décalé d'autant — que si le LLM
-    # en a proposé au moins une.
-    a_icones = any(icone for _, icone in items)
-    hauteur, ecart, y0 = _repartir(h, n, hauteur_max=210, ratio_ecart=0.22)
-    filet_x = 6
-    marge_icone = filet_x + 24
-    marge_texte = marge_icone + 76 if a_icones else 54
-
-    parts = []
-    for i, (texte, icone) in enumerate(items):
-        y = y0 + i * (hauteur + ecart)
-        cy = y + hauteur // 2
-        # Filet court centré sur la ligne plutôt qu'un trait continu : il marque
-        # l'élément sans dessiner une colonne qui traverserait la figure.
-        ligne = [
-            f'  <line x1="{filet_x}" y1="{y + 12}" x2="{filet_x}" y2="{y + hauteur - 12}" '
-            f'stroke="{ACCENT}" stroke-width="{TRAIT}" stroke-linecap="round"/>'
-        ]
-        if a_icones and icone:
-            taille = min(hauteur - 20, 56)
-            ligne.append(_icone(icone, marge_icone + taille / 2, cy, taille, NEUTRE))
-        ligne.append(
-            f'  <text x="{marge_texte}" y="{cy + 17}" fill="{TEXTE}" font-size="48" '
-            f'font-weight="600" font-family="{POLICE_SVG}">{_echapper(texte)}</text>'
-        )
-        # La règle de séparation reste statique : elle structure la figure entière,
-        # elle n'appartient à aucun des deux points qu'elle sépare.
-        parts.append(_parait("\n".join(ligne), instants[i]))
-        if i < n - 1:
-            regle_y = y + hauteur + ecart // 2
-            parts.append(
-                f'  <line x1="{marge_texte}" y1="{regle_y}" x2="{w}" y2="{regle_y}" '
-                f'stroke="{NEUTRE}" stroke-width="1" opacity="0.45"/>'
-            )
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_neurones(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Réseau de neurones : nœuds ouverts, liaisons en trait fin.
-
-    Les disques pleins de la version précédente écrasaient les liaisons, alors
-    que ce sont elles qui portent l'idée de réseau. Entrée et sortie prennent
-    l'accent, les couches cachées restent neutres.
-
-    Cadencée par couche plutôt que par nœud : une couche entière — ses nœuds et
-    les liaisons qui l'atteignent — paraît quand la narration en parle. Nœud par
-    nœud aurait produit un scintillement au lieu d'une construction lisible.
-    """
-    couches = [min(c, 5) for c in donnees.get("couches", [3, 4, 2])[:4]]
-    n_couches = len(couches)
-    max_noeuds = max(couches)
-
-    # Couches empilées de haut en bas, nœuds répartis en largeur. L'inverse —
-    # des colonnes côte à côte — étalait trois nœuds sur toute la hauteur d'un
-    # cadre 9:16 : les liaisons se croisaient et la figure devenait illisible.
-    pad_x = 90
-    bande_legende = 78          # « Entrée » au-dessus, « Sortie » en dessous
-    espacement = min(300, (h - 2 * bande_legende) // max(n_couches - 1, 1))
-    r = min((w - 2 * pad_x) // (max_noeuds * 3), espacement // 3, 54)
-
-    total_h = espacement * (n_couches - 1)
-    y0 = (h - total_h) // 2
-
-    positions = []
-    for li, n_noeuds in enumerate(couches):
-        y = y0 + li * espacement
-        rangee = []
-        for ni in range(n_noeuds):
-            if n_noeuds > 1:
-                x = pad_x + ni * (w - 2 * pad_x) // (n_noeuds - 1)
-            else:
-                x = w // 2
-            rangee.append((x, y))
-        positions.append(rangee)
-
-    instants = _cadence(couches, mots, duree_ms) if duree_ms else [None] * n_couches
-
-    # Les liaisons se dessinent avant les nœuds : elles passent ainsi derrière,
-    # et les cercles ouverts restent lisibles là où le maillage est dense. Une
-    # liaison est datée sur la couche qu'elle atteint, pas celle dont elle part :
-    # c'est l'arrivée d'une nouvelle couche que la narration annonce.
-    parts = []
-    for li in range(n_couches - 1):
-        liaisons = [
-            f'  <line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
-            f'stroke="{NEUTRE}" stroke-width="1.2" opacity="0.4"/>'
-            for (x1, y1) in positions[li]
-            for (x2, y2) in positions[li + 1]
-        ]
-        parts.append(_parait("\n".join(liaisons), instants[li + 1]))
-    for li, colonne in enumerate(positions):
-        accent = li in (0, n_couches - 1)
-        couleur = ACCENT if accent else NEUTRE
-        noeuds = [
-            f'  <circle cx="{x}" cy="{y}" r="{r}" fill="none" '
-            f'stroke="{couleur}" stroke-width="{TRAIT}"/>'
-            for (x, y) in colonne
-        ]
-        parts.append(_parait("\n".join(noeuds), instants[li]))
-
-    # Seules l'entrée et la sortie sont nommées : « Caché » répété à chaque
-    # rangée n'apprend rien et encombre une figure qui vit de son vide.
-    parts.append(
-        f'  <text x="{w // 2}" y="{y0 - r - 58}" text-anchor="middle" fill="{TEXTE_DOUX}" '
-        f'font-size="38" font-family="{POLICE_SVG}">Entrée</text>'
-    )
-    parts.append(
-        f'  <text x="{w // 2}" y="{y0 + total_h + r + 62}" text-anchor="middle" fill="{TEXTE_DOUX}" '
-        f'font-size="38" font-family="{POLICE_SVG}">Sortie</text>'
-    )
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_couches(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Empilement de couches, du bas vers le haut.
-
-    Répond à une famille de concepts que les autres figures rendaient mal : les
-    couches d'un réseau, les blocs d'une architecture, les niveaux d'une pile
-    technique. Les étapes suggèrent une circulation dans le temps, l'empilement
-    une superposition — ce n'est pas la même idée.
-
-    Chaque couche est légèrement plus étroite que celle du dessous : le décalage
-    donne la profondeur sans recourir à une perspective, qui alourdirait le trait.
-    """
-    items = donnees.get("items", [])[:5]
-    n = len(items)
-    if n == 0:
-        return ""
-
-    # Écart faible à dessein : des couches franchement séparées ne se lisent plus
-    # comme un empilement mais comme une liste de cadres.
-    couche_h, ecart, y0 = _repartir(h, n, hauteur_max=230, ratio_ecart=0.18)
-    retrait = 26  # pincement horizontal cumulé à chaque niveau
-    instants = _cadence(items, mots, duree_ms) if duree_ms else [None] * n
-
-    parts = []
-    for i, item in enumerate(items):
-        texte, icone = _item(item)
-        # Le premier élément de la liste est la couche du dessus.
-        niveau = n - 1 - i
-        marge = retrait * niveau
-        y = y0 + i * (couche_h + ecart)
-        parts.append(_boite(marge, y, w - 2 * marge, couche_h, texte,
-                            accent=(i == 0), icone=icone, delai_ms=instants[i]))
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_cycle(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Boucle : nœuds répartis en cercle, reliés dans le sens horaire.
-
-    Répond à un cas que "etapes" rend mal : un processus qui ne se termine pas
-    mais reprend sur lui-même (itération, cycle de vie, boucle de rétroaction).
-    Seul l'arc de bouclage — du dernier nœud au premier — porte l'accent : c'est
-    lui, et lui seul, qui montre que la figure boucle plutôt qu'elle ne finit.
-    """
-    items = [_item(it) for it in donnees.get("items", [])[:5]]
-    n = len(items)
-    if n < 2:
-        return ""
-
-    cx, cy = w / 2, h / 2
-    r_noeud = 46
-    marge_texte = 34
-    # Plafonné pour réserver de la place aux libellés à gauche et à droite du
-    # cercle : c'est là qu'ils ont le moins d'espace avant le bord du canevas.
-    rayon = min(w, h) / 2 - r_noeud - 200
-
-    instants = _cadence(items, mots, duree_ms) if duree_ms else [None] * n
-    positions = [
-        (
-            cx + rayon * math.cos(math.radians(-90 + i * 360 / n)),
-            cy + rayon * math.sin(math.radians(-90 + i * 360 / n)),
-            math.radians(-90 + i * 360 / n),
-        )
-        for i in range(n)
-    ]
-
-    parts = []
-    # Arcs d'abord, nœuds ensuite : même logique que "neurones", les liaisons
-    # passent derrière pour que les nœuds restent lisibles.
-    inset = math.radians(16)
-    for i in range(n):
-        j = (i + 1) % n
-        a1, a2 = positions[i][2] + inset, positions[j][2] - inset
-        x1, y1 = cx + rayon * math.cos(a1), cy + rayon * math.sin(a1)
-        x2, y2 = cx + rayon * math.cos(a2), cy + rayon * math.sin(a2)
-        bouclage = j == 0
-        couleur = ACCENT if bouclage else NEUTRE
-        marqueur = "pointe-accent" if bouclage else "pointe"
-        arc = (
-            f'  <path d="M {x1:.1f} {y1:.1f} A {rayon:.1f} {rayon:.1f} 0 0 1 '
-            f'{x2:.1f} {y2:.1f}" fill="none" stroke="{couleur}" stroke-width="{TRAIT}" '
-            f'stroke-linecap="round" marker-end="url(#{marqueur})"/>'
-        )
-        # L'arc de bouclage arrive au premier nœud, déjà paru en tout premier :
-        # il surgit donc après le dernier nœud plutôt qu'avec sa cible.
-        delai = (
-            (None if instants[-1] is None else instants[-1] + 450)
-            if bouclage else instants[j]
-        )
-        parts.append(_parait(arc, delai))
-
-    for i, (texte, icone) in enumerate(items):
-        x, y, angle = positions[i]
-        cos_a, sin_a = math.cos(angle), math.sin(angle)
-        noeud = [
-            f'  <circle cx="{x:.1f}" cy="{y:.1f}" r="{r_noeud}" fill="none" '
-            f'stroke="{NEUTRE}" stroke-width="{TRAIT}"/>'
-        ]
-        if icone:
-            noeud.append(_icone(icone, x, y, r_noeud * 1.1, NEUTRE))
-        else:
-            noeud.append(
-                f'  <text x="{x:.1f}" y="{y + 14:.1f}" text-anchor="middle" fill="{NEUTRE}" '
-                f'font-size="34" font-weight="700" font-family="{POLICE_SVG}">{i + 1}</text>'
-            )
-        # Le libellé prolonge le rayon vers l'extérieur : l'ancrage suit le
-        # cadran pour ne jamais chevaucher le nœud voisin ni le cercle.
-        lx = x + (r_noeud + marge_texte) * cos_a
-        ly = y + (r_noeud + marge_texte) * sin_a
-        if cos_a > 0.3:
-            ancre, ly, disponible = "start", ly + 16, w - lx - 16
-        elif cos_a < -0.3:
-            ancre, ly, disponible = "end", ly + 16, lx - 16
-        else:
-            ancre = "middle"
-            ly = ly + (36 if sin_a > 0 else -8)
-            disponible = w - 32
-        # La taille se déduit de la place réellement disponible, comme le chiffre
-        # de "stat" : les nœuds latéraux ont bien moins de large que le canevas
-        # entier, un libellé à taille fixe y déborderait sur le bord.
-        corps_texte = max(24, min(42, int(disponible / (max(len(texte), 1) * 0.58))))
-        noeud.append(
-            f'  <text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{ancre}" fill="{TEXTE}" '
-            f'font-size="{corps_texte}" font-weight="600" font-family="{POLICE_SVG}">{_echapper(texte)}</text>'
-        )
-        parts.append(_parait("\n".join(noeud), instants[i]))
-
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_matrice(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Grille 2x2 : deux axes indépendants, un quadrant par combinaison.
-
-    Répond à un cas que "comparaison" ne sait pas montrer : un croisement de
-    deux axes, pas un écart sur un seul. Toujours 4 quadrants, dans l'ordre de
-    lecture haut-droite (les deux axes au maximum), haut-gauche, bas-droite,
-    bas-gauche.
-    """
-    quadrants = [_item(it) for it in donnees.get("quadrants", [])[:4]]
-    if len(quadrants) < 4:
-        return ""
-    axe_x = _echapper(donnees.get("axe_x", ""))
-    axe_y = _echapper(donnees.get("axe_y", ""))
-
-    pad = 78
-    cx, cy = w / 2, h / 2
-
-    parts = [
-        f'  <line x1="{pad}" y1="{cy}" x2="{w - pad}" y2="{cy}" stroke="{NEUTRE}" '
-        f'stroke-width="{TRAIT}" stroke-linecap="round" marker-end="url(#pointe)"/>',
-        f'  <line x1="{cx}" y1="{h - pad}" x2="{cx}" y2="{pad}" stroke="{NEUTRE}" '
-        f'stroke-width="{TRAIT}" stroke-linecap="round" marker-end="url(#pointe)"/>',
-    ]
-    if axe_x:
-        parts.append(
-            f'  <text x="{w - pad - 10}" y="{cy - 20}" text-anchor="end" fill="{TEXTE_DOUX}" '
-            f'font-size="34" font-family="{POLICE_SVG}">{axe_x}</text>'
-        )
-    if axe_y:
-        parts.append(
-            f'  <text x="{cx}" y="{pad - 22}" text-anchor="middle" fill="{TEXTE_DOUX}" '
-            f'font-size="34" font-family="{POLICE_SVG}">{axe_y}</text>'
-        )
-
-    centres = [
-        ((cx + (w - pad)) / 2, (pad + cy) / 2),
-        ((pad + cx) / 2, (pad + cy) / 2),
-        ((cx + (w - pad)) / 2, (cy + (h - pad)) / 2),
-        ((pad + cx) / 2, (cy + (h - pad)) / 2),
-    ]
-    instants = _cadence(quadrants, mots, duree_ms) if duree_ms else [None] * 4
-
-    for i, ((texte, icone), (qx, qy)) in enumerate(zip(quadrants, centres)):
-        bloc = []
-        if icone:
-            bloc.append(_icone(icone, qx, qy - 34, 60, NEUTRE))
-            ty = qy + 34
-        else:
-            ty = qy
-        bloc.append(
-            f'  <text x="{qx:.1f}" y="{ty:.1f}" text-anchor="middle" fill="{TEXTE}" '
-            f'font-size="42" font-weight="600" font-family="{POLICE_SVG}">{_echapper(texte)}</text>'
-        )
-        parts.append(_parait("\n".join(bloc), instants[i]))
-
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_frise(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Frise chronologique : jalons datés le long d'une colonne verticale.
-
-    Verticale et non horizontale, contrairement à l'usage. Sur un cadre 9:16,
-    quatre dates alignées en largeur laissent 240 px par libellé, ce qui n'écrit
-    rien — même constat que pour `neurones`, dont les couches sont passées en
-    rangées pour la même raison.
-
-    Se distingue d'`etapes` par la donnée et non par le dessin : une étape est un
-    rang dans une suite, un jalon porte une date. Sans date, c'est `etapes`.
-    """
-    bruts = donnees.get("items", [])[:5]
-    n = len(bruts)
-    if n == 0:
-        return ""
-
-    jalons = [
-        (*_item(item), _echapper(item.get("date", "")) if isinstance(item, dict) else "")
-        for item in bruts
-    ]
-
-    bloc, ecart, y0 = _repartir(h, n, hauteur_max=190, ratio_ecart=0.26)
-    instants = _cadence(bruts, mots, duree_ms) if duree_ms else [None] * n
-
-    # Le pictogramme est le jalon, il ne l'accompagne pas. Posé à droite de la
-    # ligne il flottait dans le vide, sans cadre pour le rattacher à son libellé,
-    # et devait rester assez petit pour ne pas voler la vedette au texte : deux
-    # défauts que `cycle` avait déjà résolus en le logeant dans le nœud.
-    # Tout ou rien, comme la colonne d'icônes de `liste` : un mélange de gros et
-    # de petits jalons sur une même colonne se lirait comme une hiérarchie.
-    a_icones = any(icone for _, icone, _ in jalons)
-    colonne_x = 74 if a_icones else 58
-    r_jalon = 42 if a_icones else 15
-    x_texte = colonne_x + r_jalon + 44
-
-    parts = []
-    # La colonne relie les jalons entre eux : sans elle, ce sont des lignes
-    # empilées et non une chronologie. Elle s'arrête au centre des jalons
-    # extrêmes plutôt qu'aux bords du canevas, où elle pendrait dans le vide.
-    if n > 1:
-        haut = y0 + bloc // 2
-        bas = y0 + (n - 1) * (bloc + ecart) + bloc // 2
-        parts.append(
-            f'  <line x1="{colonne_x}" y1="{haut}" x2="{colonne_x}" y2="{bas}" '
-            f'stroke="{NEUTRE}" stroke-width="{TRAIT}" stroke-linecap="round"/>'
-        )
-
-    for i, (texte, icone, date) in enumerate(jalons):
-        y = y0 + i * (bloc + ecart)
-        cy = y + bloc // 2
-        dernier = i == n - 1
-        couleur = ACCENT if dernier else NEUTRE
-        # Le jalon le plus récent est plein quand les autres sont ouverts : c'est
-        # le point d'arrivée du regard, comme la dernière boîte d'`etapes`. Un
-        # jalon porteur d'icône reste ouvert, sinon le pictogramme s'y noierait.
-        plein = dernier and not a_icones
-        marqueur = [
-            f'  <circle cx="{colonne_x}" cy="{cy}" r="{r_jalon}" '
-            f'fill="{ACCENT if plein else "none"}" stroke="{couleur}" '
-            f'stroke-width="{TRAIT}"/>'
-        ]
-        if icone:
-            marqueur.append(_icone(icone, colonne_x, cy, r_jalon * 1.05, couleur))
-        if date:
-            marqueur.append(
-                f'  <text x="{x_texte}" y="{cy - 14}" fill="{couleur}" font-size="36" '
-                f'font-weight="700" font-family="{POLICE_SVG}">{date}</text>'
-            )
-        # La date au-dessus du libellé, et non à gauche de la colonne : « Mars
-        # 2024 » et « 2017 » n'ont pas la même largeur, une gouttière commune
-        # devrait se caler sur la plus longue et voler la place du libellé.
-        marqueur.append(
-            f'  <text x="{x_texte}" y="{cy + (36 if date else 15)}" fill="{TEXTE}" '
-            f'font-size="46" font-weight="600" font-family="{POLICE_SVG}">{_echapper(texte)}</text>'
-        )
-        parts.append(_parait("\n".join(marqueur), instants[i]))
-
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_embranchement(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Un point de décision et ses issues.
-
-    Répond à un cas qu'aucune autre figure ne montre : une question qui ouvre
-    plusieurs suites. `etapes` enchaîne sans jamais bifurquer, `matrice` croise
-    deux axes continus, `comparaison` oppose des grandeurs déjà connues.
-
-    La question porte l'accent, pas les issues : c'est elle qui tient la figure,
-    et accentuer deux issues sur deux reviendrait à colorier tout le dessin.
-    """
-    question = donnees.get("question", "")
-    branches = [_item(b) for b in donnees.get("branches", [])[:3]]
-    n = len(branches)
-    if not question or n < 2:
-        return ""
-
-    q_h = 190
-    tronc = 96          # de la question au distributeur
-    descente = 74       # du distributeur aux issues
-    # Plafonné à 280 : à 340 le cadre gardait une bande vide sous son libellé,
-    # l'icône et le texte occupant le haut. Un cadre qui dépasse son contenu se
-    # lit comme une case à remplir, pas comme une issue.
-    branche_h = min(280, max(160, h - q_h - tronc - descente - 40))
-    total = q_h + tronc + descente + branche_h
-    y0 = max(0, (h - total) // 2)
-
-    y_distributeur = y0 + q_h + tronc
-    y_branches = y_distributeur + descente
-
-    ecart = 30
-    bw = (w - (n - 1) * ecart) // n
-    centres = [bw // 2 + i * (bw + ecart) for i in range(n)]
-
-    instants = (
-        _cadence([question] + [t for t, _ in branches], mots, duree_ms)
-        if duree_ms else [None] * (n + 1)
-    )
-
-    question_bloc = (
-        f'  <rect x="0" y="{y0}" width="{w}" height="{q_h}" rx="{RAYON}" fill="none" '
-        f'stroke="{ACCENT}" stroke-width="{TRAIT}" stroke-linejoin="round"/>\n'
-        + _bloc_texte(question, w / 2, y0 + q_h / 2, w - 80, TEXTE,
-                      plafond=46, max_lignes=2)
-    )
-    parts = [_parait(question_bloc, instants[0])]
-
-    # Le tronc et le distributeur paraissent avec la première issue : ils
-    # annoncent la bifurcation, ils n'appartiennent à aucune branche en propre.
-    liaison = [
-        f'  <line x1="{w // 2}" y1="{y0 + q_h}" x2="{w // 2}" y2="{y_distributeur}" '
-        f'stroke="{NEUTRE}" stroke-width="{TRAIT}" stroke-linecap="round"/>',
-        f'  <line x1="{centres[0]}" y1="{y_distributeur}" x2="{centres[-1]}" '
-        f'y2="{y_distributeur}" stroke="{NEUTRE}" stroke-width="{TRAIT}" '
-        f'stroke-linecap="round"/>',
-    ]
-    parts.append(_parait("\n".join(liaison), instants[1]))
-
-    for i, (texte, icone) in enumerate(branches):
-        cx_b = centres[i]
-        issue = [
-            _fleche(cx_b, y_distributeur, cx_b, y_branches - 12),
-            f'  <rect x="{cx_b - bw // 2}" y="{y_branches}" width="{bw}" '
-            f'height="{branche_h}" rx="{RAYON}" fill="none" stroke="{NEUTRE}" '
-            f'stroke-width="{TRAIT}" stroke-linejoin="round"/>',
-        ]
-        cy_b = y_branches + branche_h / 2
-        if icone:
-            issue.append(_icone(icone, cx_b, cy_b - branche_h * 0.22, 64, NEUTRE))
-            cy_b += branche_h * 0.13
-        issue.append(_bloc_texte(texte, cx_b, cy_b, bw - 44, TEXTE, plafond=40))
-        parts.append(_parait("\n".join(issue), instants[i + 1]))
-
-    return _svg(w, h, "\n".join(parts))
-
-
-def _svg_venn(
-    donnees: dict, w: int, h: int,
-    mots: "list[dict] | None" = None, duree_ms: int = 0,
-) -> str:
-    """
-    Deux ensembles et ce qu'ils partagent.
-
-    Répond au cas où deux notions ne s'opposent pas mais se recouvrent : l'IA et
-    l'apprentissage automatique, un modèle et un agent. `comparaison` en ferait
-    deux barres, ce qui suppose une grandeur commune ; `matrice` deux axes, ce
-    qui suppose leur indépendance. Ici c'est l'inverse — le recouvrement *est*
-    l'information.
-
-    L'accent va donc à la zone commune, seule chose que la figure apprenne. Les
-    deux cercles restent neutres : ils sont les prémisses, pas la conclusion.
-    """
-    gauche = donnees.get("gauche", "")
-    droite = donnees.get("droite", "")
-    commun = donnees.get("commun", "")
-    if not gauche or not droite:
-        return ""
-
-    marge = 12
-    # Les deux contraintes se rencontrent : le rayon est borné en hauteur par le
-    # canevas, en largeur par la somme (écart + rayon) des deux cercles.
-    r = int(min(h / 2 - marge, (w / 2 - marge) / 1.6))
-    # Centres distants de 1,2 r : l'écartement usuel d'un diagramme de Venn. Plus
-    # serré, les deux cercles se lisent comme une seule forme ; plus lâche, la
-    # zone commune devient trop mince pour porter un libellé.
-    d = int(0.6 * r)
-    cx, cy = w // 2, h // 2
-
-    instants = _cadence([gauche, droite, commun or gauche], mots, duree_ms) if duree_ms else [None] * 3
-
-    parts = []
-    for i, (signe, texte) in enumerate(((-1, gauche), (1, droite))):
-        centre = cx + signe * d
-        ensemble = [
-            f'  <circle cx="{centre}" cy="{cy}" r="{r}" fill="none" '
-            f'stroke="{NEUTRE}" stroke-width="{TRAIT}"/>',
-            # Le libellé se pose au cœur de la partie non recouverte, pas au
-            # centre du cercle, qui tombe dans la zone commune.
-            _bloc_texte(texte, centre + signe * r * 0.42, cy,
-                        r * 0.84, TEXTE, plafond=40),
-        ]
-        parts.append(_parait("\n".join(ensemble), instants[i]))
-
-    if commun:
-        # La zone commune n'est pas cerclée : la souligner d'un troisième trait
-        # ajouterait une forme fermée là où la figure vit de ses recouvrements.
-        # C'est la couleur du texte, seule, qui la désigne.
-        largeur_lentille = 2 * (r - d)
-        # Corps plafonné plus bas que partout ailleurs : la lentille ne fait que
-        # 0,8 rayon de large et se rétrécit dès qu'on s'éloigne de son centre. À
-        # 34 px le libellé mordait sur les deux arcs, mesuré au rendu.
-        parts.append(
-            _parait(
-                _bloc_texte(commun, cx, cy, largeur_lentille - 16, ACCENT,
-                            plafond=30, plancher=20, poids=700),
-                instants[2],
-            )
-        )
-
-    return _svg(w, h, "\n".join(parts))
 
 
 def _svg_figure_source(donnees: dict, w: int, h: int) -> str:
@@ -1616,12 +712,10 @@ def _graphic_svg(
     donnees = graphique.get("donnees", {})
     # Import local : figures_dev importe lui-même ses helpers depuis ce module.
     from content.figures_dev import figure_recap, figure_terminal
+    from content.schemas import SCHEMAS
 
     renderers = {
-        "stat": _svg_stat, "etapes": _svg_etapes, "couches": _svg_couches,
-        "comparaison": _svg_comparaison, "liste": _svg_liste, "neurones": _svg_neurones,
-        "cycle": _svg_cycle, "matrice": _svg_matrice, "frise": _svg_frise,
-        "embranchement": _svg_embranchement, "venn": _svg_venn,
+        **SCHEMAS,
         "figure_source": _svg_figure_source, "animation": _svg_animation,
         "scene": _svg_scene, "terminal": figure_terminal, "recap": figure_recap,
     }
@@ -1795,6 +889,13 @@ CORPS_TITRE_SEUL = ((40, 120), (64, 100), (10**6, 84))
 MASCOTTE_H = 400
 # Canevas des schémas dans la zone élargie (952 × ~600 px, voir `.graphic`).
 CANEVAS_LARGE_H = 600
+# Les schémas prennent une zone haute plutôt que large : 836 × 800, de sous le
+# titre jusqu'au-dessus des sous-titres. Dans la bande large, ils tenaient en
+# 950 × 550 et laissaient 300 px vides au-dessus des sous-titres. En contrepartie
+# ils respectent la colonne des boutons sur toute leur hauteur.
+SCHEMAS_HAUTS = {"stat", "etapes", "couches", "comparaison", "liste", "neurones",
+                 "cycle", "matrice", "frise", "embranchement", "venn"}
+FIGURE_BAS = SOUS_TITRES_HAUT - 20
 # Début du bloc d'une slide sans figure, sous la zone sûre du haut.
 HAUT_BLOC_SEUL = 110
 
@@ -1942,6 +1043,54 @@ _ANIM_CSS = """
 .scene{object-fit:contain;
        -webkit-mask-image:radial-gradient(closest-side,#000 72%,transparent 100%);
        mask-image:radial-gradient(closest-side,#000 72%,transparent 100%)}
+/* ── Schémas (content/schemas.py) ── */
+/* Entrées : glisser depuis la gauche, tomber à sa place, ou simple fondu. */
+.parait.gauche{animation-name:gaucher;animation-duration:700ms}
+@keyframes gaucher{from{opacity:0;transform:translateX(-60px)}to{opacity:1;transform:none}}
+.parait.chute{animation-name:chuter;animation-duration:900ms}
+@keyframes chuter{from{opacity:0;transform:translateY(-90px)}to{opacity:1;transform:none}}
+.parait.fondu{animation-name:fondre;animation-duration:600ms}
+@keyframes fondre{from{opacity:0}to{opacity:1}}
+/* Points qui circulent sur une liaison. Le décalage d'une boucle vaut le pas
+   des points (PAS_FLUX) : la reprise ne se voit pas. */
+.coule{animation-name:couler;animation-duration:1100ms;animation-iteration-count:infinite;
+       animation-timing-function:linear}
+@keyframes couler{to{stroke-dashoffset:-30}}
+/* L'élément dont la voix parle s'allume, puis rend la main. */
+.eclaire{opacity:0;animation-name:eclairer;animation-duration:2400ms;animation-timing-function:ease}
+@keyframes eclairer{0%,55%{opacity:1}100%{opacity:0}}
+/* Chacun son tour, en boucle (cycle, embranchement) ; durée posée par élément. */
+.tour{opacity:0;animation-name:tour-role;animation-iteration-count:infinite;
+      animation-timing-function:ease-in-out}
+@keyframes tour-role{0%{opacity:0}8%,22%{opacity:1}34%,100%{opacity:0}}
+.respire{animation-name:respirer;animation-duration:2200ms;animation-iteration-count:infinite;
+         animation-direction:alternate;animation-timing-function:ease-in-out}
+@keyframes respirer{from{opacity:.35}to{opacity:1}}
+.activation{animation-name:activer;animation-duration:2400ms;animation-iteration-count:infinite;
+            animation-timing-function:ease-in-out}
+@keyframes activer{0%{opacity:.12}22%{opacity:1}55%,100%{opacity:.12}}
+.flotte{animation-name:flotter;animation-duration:3000ms;animation-iteration-count:infinite;
+        animation-direction:alternate;animation-timing-function:ease-in-out}
+@keyframes flotter{from{transform:translateY(-7px)}to{transform:translateY(7px)}}
+.pivote{transform-box:view-box;animation-name:pivoter;animation-duration:9000ms;
+        animation-iteration-count:infinite;animation-timing-function:linear}
+@keyframes pivoter{to{transform:rotate(360deg)}}
+/* Tête de l'anneau de `stat` : même durée et même courbe que `.remplit`. */
+.tete{transform-box:view-box;transform:rotate(var(--angle));animation-name:tete;
+      animation-duration:900ms;animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+@keyframes tete{from{transform:rotate(0deg)}}
+.allume{animation-name:allumer;animation-duration:250ms;animation-timing-function:linear}
+@keyframes allumer{from{stroke:#FFFFFF;stroke-opacity:.16}}
+.glisse{animation-name:glisser;animation-duration:1100ms;
+        animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+@keyframes glisser{from{opacity:0;transform:translateX(var(--dx))}}
+.onde{transform-box:fill-box;transform-origin:center;animation-name:onde;
+      animation-duration:2200ms;animation-iteration-count:infinite;animation-timing-function:ease-out}
+@keyframes onde{from{opacity:.9;transform:scale(1)}to{opacity:0;transform:scale(1.9)}}
+/* Reflet sur la barre en tête d'une comparaison, en boucle. */
+.reflet{animation-name:refleter;animation-duration:2600ms;animation-iteration-count:infinite;
+        animation-timing-function:ease-in-out}
+@keyframes refleter{0%{transform:translateX(0)}60%,100%{transform:translateX(var(--course))}}
 """
 
 
@@ -2207,7 +1356,9 @@ body{{width:1080px;height:1920px;background:#0D0D1A;overflow:hidden;
          margin-right:{MARGE - ZONE_SURE_DROITE}px;padding:28px 0;opacity:0;
          animation-name:surgit;animation-duration:800ms;animation-delay:420ms;
          animation-timing-function:cubic-bezier(.2,.8,.2,1)}}
-.graphic svg{{max-height:100%;width:auto}}
+.slide:has(> .graphic.haute){{padding-bottom:{1920 - FIGURE_BAS}px}}
+.graphic.haute{{margin-right:0}}
+.graphic svg{{max-height:100%;max-width:100%;width:auto}}
 .soustitres{{position:absolute;left:64px;right:{ZONE_SURE_DROITE}px;
             top:{SOUS_TITRES_HAUT}px;height:{SOUS_TITRES_H}px}}
 .morceau{{position:absolute;inset:0;display:flex;align-items:center;
@@ -2334,15 +1485,22 @@ def _slide_html(content: dict, total: int, bg: str = "#0D0D1A",
     """
     titre = content.get("titre", "")
     # Les mêmes horodatages servent aux sous-titres et à la construction de la
-    # figure : un seul calage, deux usages. Le canevas suit la zone élargie,
-    # plus large que haute (voir `.graphic`).
-    svg = _graphic_svg(content.get("graphique"), w=970, h=CANEVAS_LARGE_H,
-                       mots=mots, duree_ms=duree_ms)
+    # figure : un seul calage, deux usages. Un schéma prend la zone haute,
+    # les autres figures (terminal, figure d'article) la zone large.
+    graphique = content.get("graphique")
+    haute = isinstance(graphique, dict) and graphique.get("type") in SCHEMAS_HAUTS
+    if haute:
+        from content.schemas import ZONE_H, ZONE_W
+
+        w, h = ZONE_W + 2 * CADRE_MARGE, ZONE_H + 2 * CADRE_MARGE
+    else:
+        w, h = 970, CANEVAS_LARGE_H
+    svg = _graphic_svg(graphique, w=w, h=h, mots=mots, duree_ms=duree_ms)
     if svg:
         # Titre puis figure, rien entre : le LLM met surtitre et sous-titre
         # partout malgré la consigne, et ils repoussaient la figure vers le bas.
         corps = (f'<div class="titre contenu">{_titre_cinetique(titre, 180)}</div>'
-                 f'<div class="graphic anim">{svg}</div>')
+                 f'<div class="graphic{" haute" if haute else ""} anim">{svg}</div>')
     else:
         # Sans figure, le bloc de titre occupe le haut : centré, il laissait
         # un vide au-dessus qui faisait paraître la slide creuse.
