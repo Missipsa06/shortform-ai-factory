@@ -67,6 +67,11 @@ PRONONCIATIONS = ASSETS / "prononciations.json"
 MODELE = "qwen3_tts_base"
 LANGUE = "french"     # « auto » mesuré moins bon le 24/10/2026 (86 % contre 88 %)
 GRAINE = 42           # même texte, même audio : une reprise ne change pas la voix
+# Température d'échantillonnage du clone ; Wan2GP prend 0,9 par défaut. Mesuré
+# le 28/10/2026 sur trois segments chargés en chiffres : à 0,7, 77 % du texte
+# retrouvé contre 73 %, et une part de parole voisée (55 à 61 %) proche de celle
+# de Gemini (48 à 53 %) là où 0,9 enchaînait sans respirer (64 à 69 %).
+TEMPERATURE = 0.7
 DEBIT_MP3 = "128k"
 
 # Silence ajouté à la fin de chaque segment. Qwen3 s'arrête presque sur son
@@ -75,6 +80,13 @@ DEBIT_MP3 = "128k"
 # il coupait au milieu du silence entre deux segments. La pause tombe sur la
 # slide en cours, pendant sa sortie animée.
 PAUSE_FIN_S = 0.45
+
+# Silence avant la voix, après rognage de celui que le modèle a mis. Qwen3
+# attaque tantôt après 0,3 s, tantôt au premier échantillon : mesuré le
+# 28/10/2026, l'accroche d'une vidéo démarrait sur une consonne déjà entamée,
+# entendue comme un début coupé. Le fondu de 10 ms efface le clic d'une onde qui
+# ne part pas de zéro ; l'attaque fixe rend les enchaînements réguliers.
+ATTAQUE_S = 0.20
 
 # Anglicismes dont le s final se prononce aussi en français : invariables.
 _S_PRONONCE = frozenset({
@@ -185,6 +197,98 @@ def _pluriels_muets(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str
     )
 
 
+_UNITES = ("zéro un deux trois quatre cinq six sept huit neuf dix onze douze treize "
+           "quatorze quinze seize").split()
+_DIZAINES = {2: "vingt", 3: "trente", 4: "quarante", 5: "cinquante", 6: "soixante"}
+
+
+def _moins_de_cent(n: int) -> str:
+    """0 à 99 en toutes lettres, avec soixante-dix et quatre-vingts."""
+    if n < 17:
+        return _UNITES[n]
+    if n < 20:
+        return "dix-" + _UNITES[n - 10]
+    d, u = divmod(n, 10)
+    if d == 7:
+        return "soixante et onze" if u == 1 else "soixante-" + _moins_de_cent(10 + u)
+    if d == 8:
+        return "quatre-vingts" if u == 0 else "quatre-vingt-" + _UNITES[u]
+    if d == 9:
+        return "quatre-vingt-" + _moins_de_cent(10 + u)
+    return _DIZAINES[d] + ("" if u == 0 else " et un" if u == 1 else "-" + _UNITES[u])
+
+
+def _moins_de_mille(n: int) -> str:
+    """0 à 999 en toutes lettres ; « cents » ne prend son s qu'en fin de nombre."""
+    c, r = divmod(n, 100)
+    if c == 0:
+        return _moins_de_cent(r)
+    tete = "cent" if c == 1 else f"{_UNITES[c]} cent"
+    if r == 0:
+        return tete + ("s" if c > 1 else "")
+    return f"{tete} {_moins_de_cent(r)}"
+
+
+def en_lettres(n: int) -> str:
+    """
+    Entier en toutes lettres, jusqu'aux milliards.
+
+    Qwen3 lit « 30 100 » comme deux nombres séparés d'une pause — entendu « 30
+    fins 100 », « 30 cents », mesuré le 28/10/2026 — et « 30100 » sans repère.
+    Devant « mille », vingts et cents perdent leur s (« quatre-vingt mille ») ;
+    devant million et milliard, des noms, ils le gardent.
+    """
+    if n < 1000:
+        return _moins_de_mille(n)
+    parts = []
+    for valeur, nom in ((10 ** 9, "milliard"), (10 ** 6, "million")):
+        q, n = divmod(n, valeur)
+        if q:
+            parts.append(f"{en_lettres(q)} {nom}{'s' if q > 1 else ''}")
+    q, n = divmod(n, 1000)
+    if q:
+        milliers = _moins_de_mille(q)
+        if milliers.endswith(("cents", "vingts")):
+            milliers = milliers[:-1]
+        parts.append("mille" if q == 1 else f"{milliers} mille")
+    if n:
+        parts.append(_moins_de_mille(n))
+    return " ".join(parts)
+
+
+def _multiplier(m: re.Match) -> str:
+    """« 30.1K » → « trente mille cent », « 1.5M » → « 1,5 million », « 7B » → « 7 milliards »."""
+    valeur = float(m.group(1).replace(",", "."))
+    suffixe = m.group(2).lower()
+    if suffixe == "k":
+        return en_lettres(round(valeur * 1000))
+    mot = "million" if suffixe == "m" else "milliard"
+    return f"{valeur:g}".replace(".", ",") + f" {mot}{'s' if valeur >= 2 else ''}"
+
+
+def _nombres_parles(texte: str) -> str:
+    """
+    Écrit les nombres comme on les dit en français.
+
+    Gemini normalisait seul ; Qwen3 lit ce qu'on lui donne. Mesuré le 28/10/2026
+    sur une narration : « 30.1K heures » entendu « 30 points cas, heure ». Le
+    point décimal ne devient virgule que sur un nombre isolé : « GPT-5.6 » et
+    « Qwen3.5 » sont des noms, qui se disent avec « point ». Un signe collé à un
+    mot (« GPT-5 ») ou à un chiffre (« 2024-2026 ») n'est pas un moins.
+    """
+    texte = re.sub(r"(?<![\w.,-])(\d+(?:[.,]\d+)?)\s?(k|K|M|Md|B)(?!\w)", _multiplier, texte)
+    # Milliers séparés par une espace (« 30 100 »), ou entier nu de cinq chiffres
+    # et plus ; les années, quatre chiffres collés, Qwen3 les lit bien.
+    texte = re.sub(r"(?<![\w.,])(\d{1,3}(?:[   ]\d{3})+|\d{5,})(?![\w]|[.,]\d)",
+                   lambda m: en_lettres(int(re.sub(r"\D", "", m.group(1)))), texte)
+    # « 2.0 » est une version (« RoboTwin 2.0 »), pas une décimale : elle garde son point.
+    texte = re.sub(r"(?<![\w.-])(\d+)\.(\d+)(?![\w.])",
+                   lambda m: m.group(0) if m.group(2) == "0" else f"{m.group(1)},{m.group(2)}", texte)
+    texte = re.sub(r"(?<!\w)[x×]\s?(\d)", r"fois \1", texte)
+    texte = re.sub(r"(?<![\w\d])-(\d)", r"moins \1", texte)
+    return re.sub(r"(?<![\w\d])\+(\d)", r"plus \1", texte)
+
+
 def prononcer(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str:
     """
     Adapte le texte à la lecture par Qwen3 : pluriels muets, graphie phonétique.
@@ -195,7 +299,7 @@ def prononcer(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str:
     à chaque occurrence, mesuré le 24/10/2026. Les pluriels passent d'abord : le
     dictionnaire est écrit au singulier.
     """
-    texte = _pluriels_muets(texte, termes_anglais)
+    texte = _nombres_parles(_pluriels_muets(texte, termes_anglais))
     for motif, graphie in _prononciations():
         texte = motif.sub(graphie, texte)
     return texte
@@ -220,6 +324,7 @@ def _taches(textes: list[str], voix: str) -> list[dict]:
             "audio_guide": str(extrait.resolve()),
             "alt_prompt": reference,
             "seed": GRAINE,
+            "temperature": TEMPERATURE,
             "repeat_generation": 1,
             # Sans nom imposé, Wan2GP nomme d'après l'heure et le début du
             # texte : deux segments qui commencent pareil deviendraient
@@ -233,9 +338,12 @@ def _taches(textes: list[str], voix: str) -> list[dict]:
 def _en_mp3(source: Path, sortie: Path) -> None:
     """Convertit une sortie Wan2GP au MP3 qu'attend le reste du pipeline."""
     sortie.parent.mkdir(parents=True, exist_ok=True)
+    filtres = ("silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05,"
+               f"afade=t=in:d=0.01,adelay={int(ATTAQUE_S * 1000)}:all=1,"
+               f"apad=pad_dur={PAUSE_FIN_S}")
     resultat = subprocess.run(
         [find_ffmpeg(), "-y", "-i", str(source),
-         "-af", f"apad=pad_dur={PAUSE_FIN_S}", "-b:a", DEBIT_MP3, str(sortie)],
+         "-af", filtres, "-b:a", DEBIT_MP3, str(sortie)],
         capture_output=True, encoding="utf-8", errors="replace",
     )
     if resultat.returncode != 0:
@@ -371,11 +479,16 @@ def _executer(taches: list[dict], travail: Path,
     dossier, python = installation
     file = travail / "taches.json"
     file.write_text(json.dumps(taches, ensure_ascii=False), encoding="utf-8")
+    # Les CUDA graphs du décodeur de Qwen3-TTS plantent en v18.84 (« subtalker
+    # CUDA graph decode failed: unhashable type: 'list' », 28/10/2026) : toute
+    # tâche de voix échouait. Coupés par la variable que Wan2GP prévoit, que
+    # l'environnement peut toujours surcharger (vide pour les rétablir).
+    env = {"WGP_LLM_DISABLE": "graphs", **os.environ, "PYTHONIOENCODING": "utf-8"}
     try:
         resultat = subprocess.run(
             [str(python), "wgp.py", "--process", str(file), "--output-dir", str(travail)],
             cwd=dossier, capture_output=True, encoding="utf-8", errors="replace",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            env=env,
             timeout=DELAI_CHARGEMENT_S + delai_par_tache_s * len(taches),
         )
     except subprocess.TimeoutExpired as e:
