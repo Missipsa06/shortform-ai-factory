@@ -93,7 +93,7 @@ def mots_par_slide(
     """
     from content.slides import plan_slides
     from media.align import caler_mots
-    from media.tts import _clean_text, build_script_text
+    from media.tts import build_script_text, titre_prononce
 
     # Le plan fournit la correspondance segment audio → slide affichée.
     par_segment = {e["segment"]: e for e in plan_slides(script)}
@@ -104,7 +104,7 @@ def mots_par_slide(
     for entree in par_segment.values():
         donnees = entree["donnees"] or {}
         prefixes[entree["segment"]] = len(
-            _clean_text(donnees.get("titre", "")).split()
+            titre_prononce(donnees.get("titre", "")).split()
         ) if entree["genre"] == "contenu" else 0
 
     resultat: dict[str, list[dict]] = {}

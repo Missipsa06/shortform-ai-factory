@@ -24,6 +24,7 @@ from media.tts import (
     _voix_par_defaut,
     build_script_text,
     resoudre_fournisseur,
+    titre_prononce,
     voix_disponibles,
 )
 
@@ -86,6 +87,18 @@ def test_build_script_text_titre_puis_contenu():
     segments = build_script_text(_script_minimal())
     _, texte, _ = next(s for s in segments if s[0] == "slide_01")
     assert texte == "Titre un. Contenu un"
+
+
+def test_build_script_text_ne_prononce_pas_le_rang_du_titre():
+    script = _script_minimal()
+    script["slides"][0]["titre"] = "3. **Post-entraînement** : le saut"
+    _, texte, _ = next(s for s in build_script_text(script) if s[0] == "slide_01")
+    assert texte == "Post-entraînement : le saut. Contenu un"
+
+
+def test_titre_prononce_garde_une_annee_en_tete():
+    assert titre_prononce("2024 : l'année des agents") == "2024 : l'année des agents"
+    assert titre_prononce("2) **Force** ≠ jugement") == "Force jugement"
 
 
 def test_build_script_text_type_par_segment():

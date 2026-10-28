@@ -537,6 +537,17 @@ def _clean_text(text: str) -> str:
     return text
 
 
+def titre_prononce(titre: str) -> str:
+    """
+    Titre tel que la voix le dit : sans le rang affiché en tête (« 3. »).
+
+    Le numéro sert à l'écran ; prononcé, « trois. Post-entraînement » retarde
+    l'entrée dans la slide. Un ou deux chiffres seulement, suivis d'un point ou
+    d'une parenthèse : « 2024 : l'année des agents » garde son année.
+    """
+    return _clean_text(re.sub(r"^\s*\d{1,2}\s*[.)]\s+", "", titre))
+
+
 def build_script_text(script: dict) -> list[tuple[str, str, str]]:
     """
     Construit la liste des segments audio à générer depuis un script JSON.
@@ -560,7 +571,7 @@ def build_script_text(script: dict) -> list[tuple[str, str, str]]:
 
     for slide in script.get("slides", []):
         numero = slide.get("numero", len(segments))
-        titre = _clean_text(slide.get("titre", ""))
+        titre = titre_prononce(slide.get("titre", ""))
         contenu = _clean_text(slide.get("contenu", ""))
         texte = f"{titre}. {contenu}".strip(" .")
         if texte:

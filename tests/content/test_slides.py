@@ -56,17 +56,51 @@ def test_sans_chiffre_prononce_l_anneau_garde_son_instant_par_defaut():
     assert "rebond" not in svg
 
 
+TROIS_VALEURS = {"items": [{"label": "IA", "valeur": 92}, {"label": "Humain", "valeur": 78},
+                           {"label": "Hasard", "valeur": 25}]}
+
+
 def test_les_barres_poussent_apres_leur_bloc():
-    donnees = {"items": [{"label": "IA", "valeur": 92}, {"label": "Humain", "valeur": 78}]}
-    svg = _graphic_svg({"type": "comparaison", "donnees": donnees},
-                       mots=_mots("l'IA obtient 92 contre 78"), duree_ms=6000)
-    assert svg.count('class="pousse anim"') == 2
+    svg = _graphic_svg({"type": "comparaison", "donnees": TROIS_VALEURS},
+                       mots=_mots("l'IA obtient 92 contre 78 et 25"), duree_ms=6000)
+    assert svg.count('class="pousse anim"') == 3
 
 
 def test_sans_cadence_les_barres_restent_posees():
     """Sans datation, rien ne doit rester invisible à zéro."""
-    donnees = {"items": [{"label": "IA", "valeur": 92}, {"label": "Humain", "valeur": 78}]}
-    assert "pousse" not in _graphic_svg({"type": "comparaison", "donnees": donnees})
+    assert "pousse" not in _graphic_svg({"type": "comparaison", "donnees": TROIS_VALEURS})
+
+
+def _duel(a: float, b: float, unite: str = "") -> str:
+    donnees = {"items": [{"label": "Avant", "valeur": a}, {"label": "Après", "valeur": b}],
+               "unite": unite}
+    return _graphic_svg({"type": "comparaison", "donnees": donnees},
+                        mots=_mots(f"on passe de {a} à {b}"), duree_ms=6000)
+
+
+def test_deux_parts_donnent_deux_jauges():
+    svg = _duel(18.1, 71, "%")
+    assert svg.count('class="remplit anim"') == 2
+    assert "+52,9 pts" in svg
+
+
+def test_un_grand_rapport_donne_le_saut_et_son_facteur():
+    svg = _duel(18.1, 71)
+    assert "×3,9" in svg and 'class="coule anim"' in svg
+    assert "÷4" in _duel(80, 20)
+
+
+def test_deux_valeurs_proches_donnent_des_colonnes_et_leur_ecart():
+    svg = _duel(62.6, 66.5, "pts")
+    assert svg.count('class="monte anim"') == 2
+    assert "+3,9 pts" in svg
+
+
+def test_un_duel_non_chiffre_retombe_sur_les_barres():
+    donnees = {"items": [{"label": "A", "valeur": -5}, {"label": "B", "valeur": 10}]}
+    svg = _graphic_svg({"type": "comparaison", "donnees": donnees},
+                       mots=_mots("moins 5 contre 10"), duree_ms=6000)
+    assert svg.count('class="pousse anim"') == 2
 
 
 def test_le_titre_entre_mot_par_mot_et_reste_echappe():

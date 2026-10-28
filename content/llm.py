@@ -92,7 +92,10 @@ Types de graphiques disponibles — choisis le plus adapté au concept :
                  → donnees: {{"items": [{{"texte": "Données", "icone": "donnees"}}, {{"texte": "Entraînement", "icone": "reseau"}}, {{"texte": "Prédiction", "icone": "cible"}}]}}
 - "couches"    : une superposition, une architecture en niveaux (du haut vers le bas)
                  → donnees: {{"items": [{{"texte": "Sortie", "icone": "cible"}}, {{"texte": "Attention", "icone": "reseau"}}, {{"texte": "Encodage", "icone": "donnees"}}, {{"texte": "Entrée", "icone": "donnees"}}]}}
-- "comparaison": un écart chiffré → donnees: {{"items": [{{"label": "IA", "valeur": 92}}, {{"label": "Humain", "valeur": 78}}]}}
+- "comparaison": un écart chiffré → donnees: {{"items": [{{"label": "IA", "valeur": 92}}, {{"label": "Humain", "valeur": 78}}], "unite": "%"}}
+                 "valeur" est un nombre nu ; "unite" ("%", "pts", "s", "Go"…)
+                 est facultative, à donner dès que les valeurs en ont une.
+                 Pour un avant/après, mets "avant" en premier.
                  N'utilise ce type que si les valeurs sont réellement différentes
                  et quantifiables. Deux notions non chiffrables (un faussaire et
                  un détective) ne se comparent pas : c'est "etapes" ou "couches".

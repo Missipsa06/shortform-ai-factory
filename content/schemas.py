@@ -477,6 +477,10 @@ def schema_comparaison(donnees: dict, w: int, h: int,
             "n'oppose rien — un autre type de graphique conviendrait mieux.",
             len(valeurs), valeurs[0] if valeurs else "?",
         )
+    if n == 2 and departage:
+        duel = _duel(items, mots, duree_ms, str(donnees.get("unite", "")).strip())
+        if duel:
+            return _document(w, h, duel)
     bloc, ecart, y0 = _repartir(ZONE_H, n, hauteur_max=200, ratio_ecart=0.25)
     instants = _instants(items, mots, duree_ms)
     barre_h = 62
@@ -515,6 +519,191 @@ def schema_comparaison(donnees: dict, w: int, h: int,
             )
         parts.append(_parait("\n".join(bloc_svg), instants[i], "fondu"))
     return _document(w, h, "\n".join(parts))
+
+
+# ── comparaison à deux valeurs ───────────────────────────────────────────────
+#
+# Deux barres horizontales laissaient la zone presque vide, et quatre points
+# d'écart sur 66 ne s'y voyaient pas. À deux valeurs, la donnée choisit le
+# dessin : deux parts → deux jauges ; un rapport d'au moins `SEUIL_SAUT` → le
+# saut, le facteur au centre ; deux valeurs proches → deux colonnes dont seul
+# l'écart brille. Choisies sur planche le 28/10/2026, toutes trois gardées.
+
+SEUIL_SAUT = 1.5
+
+
+def _nombre(valeur: float) -> str:
+    """Chiffre à la française : virgule décimale, une décimale au plus."""
+    return f"{round(valeur, 1):g}".replace(".", ",")
+
+
+def _chiffre(valeur: float, unite: str, x: float, y: float, corps: int, fill: str,
+             dispo: float, ancre: str = "start", centre: bool = False) -> str:
+    """
+    Chiffre et son unité réduite, au corps plafonné par la largeur disponible.
+
+    `centre` centre le texte sur `y` au lieu d'y poser sa ligne de base.
+    """
+    texte = _nombre(valeur)
+    suffixe = f" {unite}" if unite else ""
+    largeur = len(texte) + 0.55 * len(suffixe)
+    corps = min(corps, int(dispo / (max(largeur, 1) * 0.62)))
+    if centre:
+        y += corps * 0.36
+    tspan = (f'<tspan font-size="{int(corps * 0.53)}" letter-spacing="0">{_echapper(suffixe)}</tspan>'
+             if suffixe else "")
+    return (f'  <text x="{x:g}" y="{y:.0f}" text-anchor="{ancre}" fill="{fill}" '
+            f'font-size="{corps}" font-weight="700" letter-spacing="-3" '
+            f'font-family="{POLICE_TITRE}">{_echapper(texte)}{tspan}</text>')
+
+
+def _duel(items: list, mots: "list[dict] | None", duree_ms: int, unite: str) -> str:
+    """Corps de la variante qui convient aux deux valeurs, ou "" pour les barres."""
+    valeurs = [it.get("valeur") for it in items]
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in valeurs):
+        return ""
+    if min(valeurs) < 0:
+        return ""                     # des colonnes partent de zéro
+    instants = _instants(items, mots, duree_ms)
+    if unite == "%" and max(valeurs) <= 100:
+        return _duel_jauges(items, valeurs, instants, mots)
+    if min(valeurs) > 0 and max(valeurs) / min(valeurs) >= SEUIL_SAUT:
+        return _duel_saut(items, valeurs, instants, unite)
+    return _duel_colonnes(items, valeurs, instants, unite)
+
+
+def _duel_jauges(items: list, valeurs: list, instants: list,
+                 mots: "list[dict] | None") -> str:
+    """
+    Deux parts, deux anneaux : la plus grande prend le dégradé, l'écart en
+    points vient dessous. Chaque arc part quand la voix dit son chiffre.
+    """
+    r, ep, cy = 170, 26, 300
+    tour = 2 * math.pi * r
+    tete = valeurs.index(max(valeurs))
+    parts = []
+    for i, (cx, item, v) in enumerate(zip((200, 636), items, valeurs)):
+        accent = i == tete
+        prononce = _instant_du_chiffre(v, mots)
+        depart = prononce if prononce is not None else (instants[i] if instants[i] is not None else 260)
+        arc = tour * v / 100
+        corps = [f'  <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#FFFFFF" '
+                 f'stroke-opacity=".08" stroke-width="{ep}"/>']
+        if arc > ep:
+            corps.append(
+                f'  <circle class="remplit anim" cx="{cx}" cy="{cy}" r="{r}" fill="none" '
+                f'stroke="{"url(#gA)" if accent else "#5C6A8A"}" stroke-width="{ep}" '
+                f'stroke-linecap="round" transform="rotate(-90 {cx} {cy})"'
+                + (' filter="url(#glow)"' if accent else "")
+                + f' style="--arc:{arc:.1f};--tour:{tour:.1f};animation-delay:{depart}ms"/>'
+            )
+        corps.append(_chiffre(v, "%", cx, cy, 104 if accent else 88,
+                              "url(#gA)" if accent else TEXTE_DOUX,
+                              2 * (r - ep) - 20, ancre="middle", centre=True))
+        corps.append(_bloc_texte(item.get("label", ""), cx, 560, 400,
+                                 TEXTE if accent else TEXTE_DOUX,
+                                 plafond=48, plancher=28, max_lignes=2, poids=700))
+        parts.append(_parait("\n".join(corps), instants[i], "fondu"))
+    ecart = "\n".join([
+        _carte(248, 640, 340, 104, accent=True, rx=52),
+        f'  <text x="418" y="708" text-anchor="middle" fill="{TEXTE}" font-size="50" '
+        f'font-weight="700" font-family="{POLICE_TITRE}">'
+        f'+{_nombre(max(valeurs) - min(valeurs))} pts</text>',
+    ])
+    parts.append(_parait(ecart, _apres(instants[1], 900), "fondu"))
+    return "\n".join(parts)
+
+
+def _duel_saut(items: list, valeurs: list, instants: list, unite: str) -> str:
+    """
+    Avant → après : la première valeur en verre neutre, la seconde accentuée,
+    et le facteur qui les sépare dans une pastille sur la liaison.
+    """
+    a, b = valeurs
+    echelle = max(valeurs)
+    facteur = f"×{_nombre(b / a)}" if b >= a else f"÷{_nombre(a / b)}"
+
+    def jauge(y: int, v: float, fill: str, instant: "int | None") -> str:
+        largeur = max(748 * v / echelle, 14)
+        pousse = ("" if instant is None
+                  else f' class="pousse anim" style="animation-delay:{instant + 180}ms"')
+        return (f'  <rect x="44" y="{y}" width="748" height="14" rx="7" fill="#FFFFFF" '
+                f'fill-opacity=".08"/>\n'
+                f'  <rect x="44" y="{y}" width="{largeur:.1f}" height="14" rx="7" '
+                f'fill="{fill}"{pousse}/>')
+
+    avant = "\n".join([
+        _carte(0, 20, ZONE_W, 250),
+        _kicker(items[0].get("label", ""), 44, 80),
+        _chiffre(a, unite, 44, 200, 120, TEXTE_DOUX, 748),
+        jauge(228, a, "#5C6A8A", instants[0]),
+    ])
+    apres = "\n".join([
+        _carte(0, 500, ZONE_W, 290, accent=True),
+        _kicker(items[1].get("label", ""), 44, 560, ACCENT),
+        _chiffre(b, unite, 44, 712, 170, "url(#gA)", 748),
+        jauge(748, b, "url(#gA)", instants[1]),
+    ])
+    pastille = "\n".join([
+        _pastille(418, 385, 74, accent=True),
+        f'  <text x="418" y="403" text-anchor="middle" fill="{NOIR}" '
+        f'font-size="{min(52, int(130 / (len(facteur) * 0.6)))}" font-weight="700" '
+        f'font-family="{POLICE_TITRE}">{_echapper(facteur)}</text>',
+    ])
+    return "\n".join([
+        _parait(avant, instants[0], "fondu"),
+        _liaison("M418 270 V500", _apres(instants[0], APRES_ELEMENT_MS)),
+        _parait(pastille, instants[1]),
+        _parait(apres, _apres(instants[1], 200), "chute"),
+    ])
+
+
+def _duel_colonnes(items: list, valeurs: list, instants: list, unite: str) -> str:
+    """
+    Deux rivaux proches : deux colonnes depuis zéro — un axe tronqué grossirait
+    l'écart —, et c'est la tranche d'écart, seule, qui brille. La plus grande
+    passe à gauche, l'étiquette d'écart a la marge pour elle.
+    """
+    base, haut, larg = 700, 520, 240
+    echelle = max(valeurs)
+    ordre = sorted(range(2), key=lambda i: -valeurs[i])
+    xs = (236, 556)
+    sommets = [base - haut * valeurs[i] / echelle for i in ordre]
+    parts = [f'  <line x1="150" y1="{base}" x2="{ZONE_W}" y2="{base}" stroke="#FFFFFF" '
+             f'stroke-opacity=".18" stroke-width="3"/>']
+    for rang, (x, i, y) in enumerate(zip(xs, ordre, sommets)):
+        accent = rang == 0
+        cx = x + larg / 2
+        monte = ("" if instants[i] is None
+                 else f' class="monte anim" style="animation-delay:{instants[i]}ms"')
+        fond = (f'fill="url(#gV)" fill-opacity=".35" stroke="url(#gA)" stroke-width="3"' if accent
+                else f'fill="url(#verre)" stroke="{LISERE}" stroke-width="2"')
+        bloc = [
+            f'  <rect x="{x}" y="{y:.1f}" width="{larg}" height="{base - y:.1f}" rx="22" {fond}{monte}/>',
+            _chiffre(valeurs[i], unite, cx, y - 30, 96 if accent else 76,
+                     "url(#gA)" if accent else TEXTE_DOUX, 300, ancre="middle"),
+            _bloc_texte(items[i].get("label", ""), cx, 752, 300, TEXTE if accent else TEXTE_DOUX,
+                        plafond=40, plancher=24, max_lignes=1, poids=700),
+        ]
+        parts.append(_parait("\n".join(bloc), instants[i], "fondu"))
+
+    dessus, dessous = sommets
+    milieu = (dessus + dessous) / 2
+    etiquette = f"+{_nombre(valeurs[ordre[0]] - valeurs[ordre[1]])}" + (f" {unite}" if unite else "")
+    ecart = "\n".join([
+        f'  <rect x="{xs[0]}" y="{dessus:.1f}" width="{larg}" height="{max(dessous - dessus, 6):.1f}" '
+        f'rx="12" fill="url(#gA)" filter="url(#glow)"/>',
+        f'  <line x1="{xs[0]}" y1="{dessous:.1f}" x2="{xs[1] + larg}" y2="{dessous:.1f}" '
+        f'stroke="{VIOLET_CLAIR}" stroke-width="3" stroke-dasharray="10 10"/>',
+        _carte(0, milieu - 36, 200, 72, accent=True, rx=36),
+        f'  <text x="100" y="{milieu + 14:.0f}" text-anchor="middle" fill="{TEXTE}" '
+        f'font-size="{min(40, int(180 / (len(etiquette) * 0.6)))}" font-weight="700" '
+        f'font-family="{POLICE_TITRE}">{_echapper(etiquette)}</text>',
+        f'  <path d="M200 {milieu:.1f} H{xs[0] - 4}" stroke="{ACCENT}" stroke-width="3"/>',
+    ])
+    fin = None if instants[0] is None else max(instants) + 1000
+    parts.append(_parait(ecart, fin, "fondu"))
+    return "\n".join(parts)
 
 
 # ── liste ────────────────────────────────────────────────────────────────────

@@ -1023,6 +1023,11 @@ _ANIM_CSS = """
         animation-name:pousser;animation-duration:700ms;
         animation-timing-function:cubic-bezier(.2,.8,.2,1)}
 @keyframes pousser{from{transform:scaleX(0)} to{transform:scaleX(1)}}
+/* Colonne de `comparaison` à deux valeurs : elle monte depuis sa base. */
+.monte{transform-box:fill-box;transform-origin:center bottom;
+       animation-name:monter;animation-duration:900ms;
+       animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+@keyframes monter{from{transform:scaleY(0)} to{transform:scaleY(1)}}
 /* Le chiffre de `stat` marque le moment où la voix le prononce. */
 .rebond{transform-box:fill-box;transform-origin:center;
         animation-name:rebondir;animation-duration:600ms;
