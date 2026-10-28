@@ -1,0 +1,10 @@
+# Environnement d'entraînement de la voix, séparé du projet : PyTorch et le GPU
+# restent hors de pyproject.toml, comme pour Wan2GP. Mêmes versions de torch que
+# le venv de Wan2GP, pour réutiliser le cache de uv. qwen-tts épingle lui-même
+# transformers 4.57.3 et accelerate 1.12.0.
+# Installation : make voix-env
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+qwen-tts==0.1.1
+peft==0.17.0

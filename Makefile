@@ -20,7 +20,8 @@ VIDEOS := data/videos
 .DEFAULT_GOAL := help
 .PHONY: help install install-subs script slides images audio render assemble video subtitles \
         all up down restart logs shell psql dag-test docker-check dashboard scrape \
-        veille-video veille-hasard export-drive publish test clean
+        veille-video veille-hasard export-drive publish test clean \
+        voix-env voix-corpus voix-enregistrer voix-jeu voix-entrainer voix-ecouter
 
 # Un seul espace entre les mots : make peut utiliser sh ou cmd selon le terminal,
 # et sh écrase les espaces multiples. Le séparateur ':' rend donc pareil partout.
@@ -44,6 +45,8 @@ help:
 	@echo make publish : publie les videos approuvees, en prive
 	@echo make test : lance pytest
 	@echo make clean : supprime les caches Python
+	@echo make voix-corpus / voix-enregistrer / voix-jeu VOIX=moi : corpus et prises de ta voix
+	@echo make voix-env / voix-entrainer / voix-ecouter EPOQUE=3 : affinage LoRA de Qwen3-TTS
 	@echo Variables : TOPIC, STEM, PROVIDER, VOICE, WHISPER, LIMIT
 
 # ── Installation ──────────────────────────────────────────────────────────────
@@ -167,6 +170,37 @@ clean:
 # Sujet tire au sort dans la file, plutot que le plus recent.
 veille-hasard:
 	$(UV) python -m automation.workflow --aleatoire $(if $(PROVIDER),--provider $(PROVIDER),) $(if $(VOICE),--voice $(VOICE),) --whisper-model $(WHISPER)
+
+# ── Voix propre : corpus, enregistrement, affinage LoRA de Qwen3-TTS ──────────
+# L'affinage tourne dans son propre venv (PyTorch + GPU), hors du projet.
+VOIX ?= moi
+ifeq ($(OS),Windows_NT)
+VOIX_PY := outils\voix_lora\.venv\Scripts\python.exe
+else
+VOIX_PY := outils/voix_lora/.venv/bin/python
+endif
+
+voix-env:
+	uv venv outils/voix_lora/.venv --python 3.10
+	uv pip install --python $(VOIX_PY) -r outils/voix_lora/requirements.txt --index-strategy unsafe-best-match
+
+voix-corpus:
+	$(UV) python -m media.corpus_voix corpus --voix $(VOIX)
+
+voix-enregistrer:
+	$(UV) streamlit run validation/enregistrer_voix.py -- $(VOIX)
+
+voix-jeu:
+	$(UV) python -m media.corpus_voix jeu --voix $(VOIX)
+
+voix-entrainer:
+	$(VOIX_PY) outils/voix_lora/voix_lora.py codes --voix $(VOIX)
+	$(VOIX_PY) outils/voix_lora/voix_lora.py entrainer --voix $(VOIX)
+
+# EPOQUE : numéro de l'époque à exporter puis écouter (voir data/voix/<voix>/lora/).
+voix-ecouter:
+	$(VOIX_PY) outils/voix_lora/voix_lora.py exporter --voix $(VOIX) --epoque $(EPOQUE)
+	$(VOIX_PY) outils/voix_lora/voix_lora.py ecouter --voix $(VOIX) --epoque $(EPOQUE)
 
 # Copie les videos approuvees vers le dossier synchronise (Google Drive).
 # Pour publier depuis le telephone sans passer par l'ordinateur.

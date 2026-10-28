@@ -6,13 +6,14 @@ Choisi par TTS_PROVIDER dans .env :
     gemini  Gemini TTS — voix nettement plus naturelle, et surtout dirigeable :
             on décrit l'interprétation en français au lieu de régler trois
             molettes. Préversion à 10 appels par jour.
-    qwen3   Qwen3-TTS en local par Wan2GP (media/wan2gp.py), voix Charon
+    qwen3   Qwen3-TTS en local par Wan2GP (media/wan2gp.py), voix `animateur`
             clonée — sans quota, mais hors de l'image Docker (GPU requis).
     nvidia  Magpie TTS hébergé par NVIDIA, deux voix françaises.
 
 edge-tts a été retiré le 24/10/2026 : ses voix, plafonnées à cinq, étaient
 celles que la chaîne n'avait pas retenues, et Qwen3 le remplace comme repli
-sans quota en gardant la voix Charon.
+sans quota. Il clonait Charon jusqu'au 28/10/2026, il dit désormais la voix
+`animateur`, inventée par Qwen3 VoiceDesign (voir media/wan2gp.py).
 
 Usage :
     python -m media.tts --input data/processed/manuel_rag.json
@@ -51,7 +52,7 @@ FOURNISSEUR_DEFAUT = "gemini"
 # qu'à la lecture. À activer (TTS_FALLBACK=1) pendant le travail sur le visuel.
 #
 # La valeur peut aussi nommer le moteur de repli : "1"/"true"/... retient qwen3,
-# qui garde la voix Charon par clonage et n'a pas de quota ; "nvidia" bascule
+# local et sans quota ; "nvidia" bascule
 # sur magpie-tts-multilingual, seul repli possible sous Airflow, où Wan2GP
 # n'existe pas.
 FALLBACK_ENV = "TTS_FALLBACK"

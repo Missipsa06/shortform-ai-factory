@@ -7,8 +7,8 @@ Synthèse vocale locale : Qwen3-TTS piloté par Wan2GP, voix clonée.
 **Pourquoi ce moteur.** Gemini TTS est une préversion limitée à 10 appels par
 jour, qui refuse certains segments sans raison stable (400 INVALID_ARGUMENT,
 reproductible sur une conclusion le 24/10/2026). Ce moteur tourne sur la machine,
-sans quota, et **clone la voix Charon** à partir d'un extrait de 10 s : une vidéo
-produite en local garde la voix des autres.
+sans quota, et **clone la voix de la chaîne** à partir d'un extrait de 12 s
+(`animateur`, inventée par Qwen3 VoiceDesign ; Charon jusqu'au 28/10/2026).
 
 **Pourquoi Qwen3 et pas un autre.** Mesuré le 24/10/2026 sur une narration de 195
 mots dense en jargon, transcrite par Whisper : Qwen3 retrouve 88 % du texte et
@@ -26,7 +26,7 @@ coûte une quarantaine de secondes ; neuf lancements en coûteraient six minutes
 
 Configuration (.env) :
     WAN2GP_DIR=D:\\Wan2GP        dossier de Wan2GP, avec son .venv
-    QWEN3_TTS_VOICE=charon      nom d'une voix de media/assets/voix/
+    QWEN3_TTS_VOICE=animateur   nom d'une voix de media/assets/voix/
 """
 
 import json
@@ -52,7 +52,10 @@ logger = logging.getLogger(__name__)
 
 WAN2GP_ENV = "WAN2GP_DIR"
 VOIX_ENV = "QWEN3_TTS_VOICE"
-VOIX_DEFAUT = "charon"
+# Voix inventée par Qwen3 VoiceDesign (28/10/2026), et non plus Charon : cloner
+# une sortie de Gemini TTS rapproche du « modèle concurrent » que ses conditions
+# interdisent. Elle n'appartient à personne, les poids sont sous Apache 2.0.
+VOIX_DEFAUT = "animateur"
 
 ASSETS = Path(__file__).parent / "assets"
 # Une voix = deux fichiers de même nom : l'extrait (.mp3) et sa transcription

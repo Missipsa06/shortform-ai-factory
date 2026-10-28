@@ -156,13 +156,13 @@ def test_voix_par_defaut_nvidia_repli_sur_constante(monkeypatch):
 def test_voix_disponibles_couvre_les_trois_moteurs():
     d = voix_disponibles()
     assert set(d) == set(FOURNISSEURS)
-    assert "charon" in d["qwen3"]               # la voix versionnée dans le dépôt
+    assert "animateur" in d["qwen3"]            # la voix versionnée dans le dépôt
     assert "Louise" in d["nvidia"] and "Pascal" in d["nvidia"]
 
 
 def test_voix_par_defaut_qwen3(monkeypatch):
     monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
-    assert _voix_par_defaut("qwen3") == "charon"
+    assert _voix_par_defaut("qwen3") == "animateur"
 
 
 # ── Lotissement des appels de synthèse ───────────────────────────────────────
@@ -267,11 +267,11 @@ def _cause():
     )
 
 
-def test_basculer_sur_qwen3_garde_la_voix_charon(monkeypatch):
+def test_basculer_sur_qwen3_garde_la_voix_de_la_chaine(monkeypatch):
     """Tout l'intérêt du repli local : la vidéo garde la voix de la chaîne."""
     monkeypatch.setenv("TTS_FALLBACK", "1")
     monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
-    assert _basculer(_cause()) == ("qwen3", "charon")
+    assert _basculer(_cause()) == ("qwen3", "animateur")
 
 
 def test_basculer_sur_nvidia_respecte_la_voix_configuree(monkeypatch):
@@ -500,13 +500,14 @@ def test_qwen3_reprend_la_narration_meme_apres_le_premier_lot(monkeypatch, tmp_p
     """
     tts, script = _quota_au_deuxieme_lot(monkeypatch)
     monkeypatch.setenv("TTS_FALLBACK", "1")
+    monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
     repris: list[str] = []
     monkeypatch.setattr(tts, "generer_audio_qwen3",
                         lambda s, d, f, v: repris.append(v) or (f, []))
 
     tts.generer_audio_groupe(script, tmp_path / "seg", tmp_path / "f.mp3",
                              provider="gemini")
-    assert repris == ["charon"]
+    assert repris == ["animateur"]
 
 
 def test_nvidia_reste_interdit_apres_le_premier_lot(monkeypatch, tmp_path):
