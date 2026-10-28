@@ -331,7 +331,7 @@ travail sur le visuel :
 
 ```bash
 # .env
-TTS_FALLBACK=1     # bascule sur qwen3 (voix Charon clonée) si le quota Gemini est épuisé
+TTS_FALLBACK=1     # bascule sur qwen3 (voix animateur, locale) si le quota Gemini est épuisé
 ```
 
 La bascule n'a lieu que sur le **premier lot**, avant qu'un octet d'audio

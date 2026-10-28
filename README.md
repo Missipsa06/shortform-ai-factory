@@ -15,8 +15,10 @@ obligatoire sur validation humaine** avant toute mise en ligne.
 Deux DAGs reliés par une file d'articles : `veille_quotidienne` (cron) collecte
 et indexe, `produire_video` (déclenché, avec paramètres) en consomme un pour
 fabriquer la vidéo. Le point focal, en cyan, est le passage du **résumé réel** au
-script : c'est lui qui décide de la qualité. Illustrations, figures d'articles et
-agent MCP sont omis du schéma pour le garder lisible ; ils sont décrits plus bas.
+script : c'est lui qui décide de la qualité. Le script est écrit puis contrôlé
+par un graphe LangGraph, la voix est dite en local par Qwen3-TTS. Illustrations,
+figures d'articles et agent MCP sont omis du schéma pour le garder lisible ; ils
+sont décrits plus bas.
 Version HTML : [pipeline.html](pipeline.html).
 
 **Principes de conception :**
@@ -139,11 +141,11 @@ Institute (CC BY 4.0) et NIST (domaine public).
 | Veille | `scraper/` | Arxiv, HuggingFace (blog, modèles et Daily Papers en tendance), Hacker News, Montreal AI Ethics Institute et NIST → Postgres, déduplication par `source_id`, popularité relevée sur la source, puis vectorisation des nouveaux articles. |
 | Sélection | `automation/workflow.py` | Score hybride lexical + sémantique, partition par statut, articles marqués consommés. |
 | Figures source | `scraper/figures.py` | Relève les figures publiées dans l'article (arXiv HTML, blog HuggingFace), avec légende et crédit. Le LLM peut en choisir une par indice. |
-| Script | `content/llm.py` + `providers.py` | Reformulation grand public en JSON structuré (hook, introduction, slides, conclusion, hashtags). Tout fait cité doit se retrouver dans la source. |
+| Script | `automation/graphe_script.py` + `content/llm.py` | Reformulation grand public en JSON structuré (hook, introduction, slides, conclusion, hashtags). Tout nombre et tout sigle doit se retrouver dans la source, et la mise en page est mesurée avant la voix ; ce qui est refusé repart au modèle, deux fois au plus. |
 | Illustrations | `content/images.py` | Photos Pexels, ou images générées par Cloudflare Workers AI ou en local par Wan2GP (Z-Image Turbo, 9:16 natif), sur chaque slide de contenu. `IMAGE_SLIDES_SCHEMA=0` en prive celles qui portent un schéma. |
-| Voix | `media/tts.py` | Gemini TTS, NVIDIA Magpie, ou Qwen3-TTS en local par Wan2GP (`media/wan2gp.py`, voix Charon clonée). Passe **avant** l'image : elle en donne la durée. Les moteurs hébergés synthétisent **par lots** pour ménager les quotas, puis redécoupent par slide ; Qwen3 produit un fichier par segment. |
+| Voix | `media/tts.py` | Qwen3-TTS en local par Wan2GP (`media/wan2gp.py`, voix `animateur`), Gemini TTS ou NVIDIA Magpie. Passe **avant** l'image : elle en donne la durée. Le numéro d'une slide s'affiche mais ne se dit pas. Les moteurs hébergés synthétisent **par lots** pour ménager les quotas, puis redécoupent par slide ; Qwen3 produit un fichier par segment. |
 | Datation | `media/align.py` | Horodate chaque mot du texte connu, pour le karaoké. |
-| Schémas | `content/slides.py` | Onze figures générées, la figure d'article et 32 pictogrammes, construits au rythme de la narration (voir plus bas). |
+| Schémas | `content/schemas.py` | Onze figures générées, la figure d'article et 32 pictogrammes, construits au rythme de la narration (voir plus bas). |
 | Rendu | `content/slides.py` + `render.py` | Slides HTML/SVG animées + surlignage mot à mot, capturées image par image via Playwright → un clip MP4 par slide. Polices embarquées pour un rendu identique en local et en conteneur. |
 | Montage | `media/assembly.py` | FFmpeg concatène les clips et colle la bande son. |
 | Validation | `validation/dashboard.py` + `runs.py` | Lancement et suivi des exécutions (détachées, journal sur disque), prévisualisation, approbation ou rejet. |
@@ -160,7 +162,7 @@ d'environnement choisit le moteur, une option de ligne de commande le surcharge.
 | Rôle | Variable | Valeurs | Défaut |
 |---|---|---|---|
 | Script | `LLM_PROVIDER` | `gemini`, `mistral`, `openrouter`, `nvidia`, `kimi` | `mistral` |
-| Voix | `TTS_PROVIDER` | `gemini` (Charon), `qwen3` (Charon clonée, local), `nvidia` (Louise, Pascal) | `gemini` |
+| Voix | `TTS_PROVIDER` | `qwen3` (`animateur`, local), `gemini` (Charon), `nvidia` (Louise, Pascal) | `gemini` dans le code, `qwen3` dans `.env` |
 | Illustrations | `IMAGE_PROVIDER` | `pexels`, `cloudflare`, `wan2gp` (local) | `pexels` |
 | Vecteurs | `EMBEDDING_MODEL` | tout modèle fastembed (local) | MiniLM multilingue |
 
@@ -180,20 +182,50 @@ compte, puisque ré-indexer tout le corpus est fréquent.
 
 ---
 
+## Voix
+
+La voix de la chaîne, `animateur`, **n'appartient à personne** : elle a été
+inventée par Qwen3 VoiceDesign à partir d'une description en texte (« voix
+masculine médium, animateur de podcast, curieuse et engageante »), choisie à
+l'oreille parmi cinq candidates. Ses 12 premières secondes servent d'extrait de
+clonage à Qwen3-TTS, qui dit chaque narration en local, sans quota.
+
+Elle remplace un clone de la voix Charon de Gemini : les conditions de l'API
+Gemini interdisent d'utiliser le service pour développer un modèle concurrent,
+et cloner ou affiner une voix de synthèse sur ses sorties s'en rapproche. Les
+poids de Qwen3-TTS sont sous Apache 2.0.
+
+Si le clone ne suffisait plus, un affinage LoRA sur une voix enregistrée est
+outillé de bout en bout, dans un venv séparé (PyTorch reste hors du projet) :
+
+```bash
+make voix-corpus VOIX=moi        # 334 phrases tirées des scripts, ~45 min de lecture
+make voix-enregistrer VOIX=moi   # une prise par phrase, dans le navigateur
+make voix-jeu VOIX=moi           # conversion 24 kHz et contrôle de lecture
+make voix-env                    # venv d'entraînement (torch, qwen-tts, peft)
+make voix-entrainer VOIX=moi     # LoRA, un fichier par époque
+make voix-ecouter VOIX=moi EPOQUE=3
+```
+
+---
+
 ## Figures schématiques
 
 Le LLM choisit un type de figure par slide et en fournit les données ; le SVG est
-généré, jamais dessiné à la main.
+généré par `content/schemas.py`, d'après un modèle dessiné à la main
+(`design/schemas/reference.html`).
+
+![Les onze schémas et les trois variantes de comparaison à deux valeurs, rendus par le pipeline : jauge, étapes, couches isométriques, barres, liste, réseau, cycle, matrice, frise, embranchement, Venn, puis jauges jumelles, saut avant/après et colonnes avec leur écart.](docs/schemas.jpg)
 
 | Type | Ce qu'il montre |
 |---|---|
-| `stat` | Un chiffre clé. L'anneau **se remplit jusqu'à la valeur** quand celle-ci porte un dénominateur. |
-| `etapes` | Une suite dans le temps, cadres reliés par des flèches. |
+| `stat` | Un chiffre clé. La jauge **se remplit jusqu'à la valeur** quand celle-ci porte un dénominateur, au moment où la voix la prononce. |
+| `etapes` | Une suite dans le temps, cartes reliées par un flux. |
 | `frise` | Une chronologie : chaque jalon porte une date. |
 | `cycle` | Un processus qui revient à son point de départ. |
 | `embranchement` | Une question fermée et ses deux ou trois issues. |
-| `couches` | Une superposition, une architecture en niveaux. |
-| `comparaison` | Un écart chiffré entre deux à quatre grandeurs. |
+| `couches` | Une superposition, une architecture en niveaux (pile isométrique). |
+| `comparaison` | Un écart chiffré entre deux à quatre grandeurs. À deux valeurs, le dessin suit la donnée : deux parts → **jauges jumelles** ; un rapport d'au moins ×1,5 → **le saut** avant/après, facteur au centre ; deux valeurs proches → **colonnes** depuis zéro, dont seul l'écart brille. |
 | `matrice` | Le croisement de deux axes indépendants. |
 | `venn` | Deux notions qui se recouvrent, et ce qu'elles partagent. |
 | `liste` | Des points clés sans ordre. |
@@ -208,11 +240,14 @@ l'article (un papier arXiv sur trois), le type est fermé et on revient au sché
 Chaque item peut porter un pictogramme, choisi dans un vocabulaire de 32 tracés
 embarqués. Une icône hors vocabulaire est ignorée, jamais rendue de travers.
 
-Trois règles tiennent la cohérence d'une figure à l'autre : **une seule épaisseur
-de trait**, **des formes ouvertes** — le fond reste celui de la slide — et **un
-seul accent coloré** par figure, qui désigne la conclusion et rien d'autre. La
-seule entorse à la première est réservée à ce qui porte une mesure : les barres
-d'une comparaison, l'anneau d'une statistique.
+Trois règles tiennent la cohérence d'une figure à l'autre (charte « verre
+lumineux ») : des **cartes de verre** translucide au liseré clair ; **un seul
+élément en dégradé** cyan → violet clair, avec un halo, là où le regard doit
+finir — le résultat, la couche du dessus, la question ; et **un mouvement qui
+porte le sens** — des points circulent sur les liaisons, le cycle tourne,
+l'élément dont la voix parle s'allume. Les schémas occupent toute la hauteur
+entre le titre et les sous-titres, en respectant les zones que recouvre
+l'interface de TikTok.
 
 **Les figures se construisent au rythme de la parole.** Les horodatages produits
 pour le karaoké servent une seconde fois : chaque élément paraît quand la
@@ -237,6 +272,7 @@ make dashboard                    # validation humaine
 make publish                      # vidéos approuvées → TikTok, en SELF_ONLY
 make export-drive                 # vidéos approuvées → dossier synchronisé
 make psql                         # console SQL sur la base métier
+make voix-corpus / voix-enregistrer / voix-entrainer   # voix propre (voir « Voix »)
 make test                         # tests unitaires (content/, media/, scraper/)
 make dag-test                     # intégrité des DAGs (dans l'image)
 ```
@@ -255,11 +291,14 @@ make dag-test                     # intégrité des DAGs (dans l'image)
 ```
 dags/            veille_quotidienne.py, produire_video.py
 scraper/         collecte des sources, figures d'articles, couche d'accès Postgres
-content/         LLM, quotas, slides, illustrations, vecteurs, rendu, agent MCP
-media/           TTS, datation mot à mot, montage FFmpeg, nommage
-validation/      dashboard Streamlit + suivi des exécutions lancées depuis l'UI
+content/         LLM, quotas, slides, schémas, illustrations, vecteurs, rendu, agent MCP
+media/           TTS, voix (Wan2GP, corpus), datation mot à mot, montage FFmpeg, nommage
+validation/      dashboard Streamlit, suivi des exécutions, enregistrement de voix
 publish/         TikTok, export Drive (Instagram à faire)
-automation/      workflow.py — exécution locale séquentielle, sans Airflow
+automation/      workflow.py (exécution locale, sans Airflow), graphe_script.py (LangGraph)
+outils/          voix_lora/ — affinage LoRA de Qwen3-TTS, dans son propre venv
+design/          schemas/reference.html — modèle dessiné à la main des onze schémas
+docs/            pipeline.png (export de pipeline.html), schemas.jpg
 tests/           content/, media/, scraper/ en local, dags/ dans l'image
 data/            artefacts par sujet (scripts, slides, audio, vidéos)
 ```
@@ -283,9 +322,10 @@ incrusté, voix française de synthèse, AAC 128 kbps.
 
 ## Tests
 
-`make test` couvre la logique pure : figures schématiques et pictogrammes,
-diagnostic des quotas, sélection de fournisseur et extraction JSON, boucle de
-l'agent MCP, nettoyage, segmentation et lotissement du texte lu, conventions de
+`make test` couvre la logique pure : figures schématiques et pictogrammes, choix
+de la variante de comparaison, diagnostic des quotas, sélection de fournisseur et
+extraction JSON, boucle de l'agent MCP, nettoyage, segmentation et lotissement du
+texte lu (rang du titre compris), corpus de voix, conventions de
 nommage, échappement du démuxeur concat de FFmpeg, analyse des pages sources et
 extraction des figures. Aucun appel réseau, aucun binaire externe, aucune base.
 
@@ -299,9 +339,9 @@ publication.
 ## Reste à faire
 
 - `publish/instagram.py` (Meta Graph API / Reels)
-- Modèle de scoring des sujets, entraîné sur les validations du dashboard
+- Dédoublonner les sujets entre sources : un même buzz remonte du blog, des modèles et de Hacker News
 - Musique de fond, transitions entre slides, variations d'habillage
-- Brancher l'agent MCP dans le sujet libre, après comparaison de scripts avec et sans
 - Figures d'article en mode multi-sources (pas encore d'article principal désigné)
+- Une voix affinée par LoRA, si le clone d'`animateur` déçoit : l'outillage existe, le branchement au pipeline non
 - Éprouver les onze figures sur de vraies sorties de LLM, pas seulement des scripts écrits à la main
 - Traçabilité des licences en base (seules les sources RSS en déclarent une, rien n'est stocké), attribution Pexels
