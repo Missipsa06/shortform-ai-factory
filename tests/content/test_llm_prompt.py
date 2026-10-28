@@ -16,6 +16,20 @@ def test_format_ne_casse_pas():
     assert "{{" not in prompt and "__" not in re.sub(r"\*\*", "", prompt)
 
 
+def test_une_slide_en_double_ne_garde_que_sa_version_complete():
+    """Gemma 4, 28/10/2026 : la slide 4 coupée net, puis réécrite entière."""
+    from content.llm import _sans_doublons
+
+    slides = [{"numero": 3, "titre": "Pivot", "contenu": "Robotique."},
+              {"numero": 4, "titre": "Arrêt AGI", "contenu": "On met "},
+              {"numero": 4, "titre": "Arrêt AGI", "contenu": "On met de côté l'AGI.",
+               "graphique": {"type": "cycle"}},
+              {"numero": 5, "titre": "Fin", "contenu": "Bilan."}]
+    gardees = _sans_doublons(slides)
+    assert [s["titre"] for s in gardees] == ["Pivot", "Arrêt AGI", "Fin"]
+    assert gardees[1]["graphique"] == {"type": "cycle"}
+
+
 def test_types_dev_proposes():
     prompt = _prompt()
     ligne = re.search(r'"type": "([^"]+)"', prompt).group(1).split("|")

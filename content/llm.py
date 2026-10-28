@@ -370,6 +370,7 @@ def reformulate_article(
         champs_requis=("titre_video", "hook", "slides", "conclusion"),
     )
 
+    script["slides"] = _sans_doublons(script["slides"])
     script["source_id"] = source_id
     script["source"] = source
     script["titre_original"] = title
@@ -380,6 +381,28 @@ def reformulate_article(
         script["llm_replis"] = trace["replis"]
 
     return script
+
+
+def _sans_doublons(slides: list) -> list:
+    """
+    Une slide par titre : la plus complète, à la place de la première.
+
+    Observé le 28/10/2026 sur Gemma 4 : la slide 4 écrite deux fois, d'abord
+    coupée net (« On met », sans figure), puis entière avec son schéma. La
+    vidéo montrait les deux. Le texte le plus long est la version reprise.
+    """
+    gardees: dict[str, dict] = {}
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        cle = str(slide.get("titre") or slide.get("numero", "")).strip().lower()
+        ancienne = gardees.get(cle)
+        if ancienne is not None:
+            logger.warning("Slide en double retirée : « %s »", slide.get("titre", ""))
+        # Réaffecter une clé garde sa place : la version complète prend le rang de la première.
+        if ancienne is None or len(str(slide.get("contenu") or "")) > len(str(ancienne.get("contenu") or "")):
+            gardees[cle] = slide
+    return list(gardees.values())
 
 
 def save_script(script: dict, source_id: str, source: str, suffix: str = "") -> Path:
