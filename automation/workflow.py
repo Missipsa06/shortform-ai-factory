@@ -573,7 +573,13 @@ def step_llm(sujet: "Sujet | str", provider: str | None = None) -> Path:
     # leurs boucles de correction : voir automation/graphe_script.py. Le sujet
     # revient du graphe, qui peut l'avoir documenté — un sujet libre couvert par
     # le corpus devient multi-sources, avec ses articles et son propre stem.
-    script, sujet = produire_script(sujet, provider)
+    try:
+        script, sujet = produire_script(sujet, provider)
+    finally:
+        # Un modèle local resterait 5 min en VRAM : la voix, juste après, manquerait de place.
+        from content.providers import liberer_ollama
+
+        liberer_ollama()
     provenance = sujet.provenance_figures()
     # Consignée dans le script : l'étape des images relève les figures une
     # seconde fois, pour rester exécutable seule après une reprise par
@@ -731,10 +737,11 @@ def step_assembly(clips: list[Path], audio_path: Path, stem: str) -> Path:
     Returns:
         Chemin du MP4 brut
     """
-    from media.assembly import assemble_clips
+    from media.assembly import assemble_clips, genres_du_script
 
     output_path = VIDEOS_DIR / f"{stem}_raw.mp4"
-    raw_video = assemble_clips(clips, audio_path, output_path)
+    genres = genres_du_script(PROCESSED_DIR / f"{stem}.json")
+    raw_video = assemble_clips(clips, audio_path, output_path, genres)
     logger.info("Vidéo brute : %s", raw_video)
     return raw_video
 

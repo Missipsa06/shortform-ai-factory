@@ -1,0 +1,29 @@
+{
+  "_origine": "Générés le 30/10/2026 en local par Stable Audio 3 Small (Stability AI) via Wan2GP v17.17, 8 étapes, solveur pingpong, graine 42.",
+  "_licence": "Stability AI Community License (https://stability.ai/license) : usage commercial libre sous 1 M$ de chiffre d'affaires annuel ; les sons générés appartiennent à qui les génère. Au-delà, licence Enterprise requise.",
+  "_negatif_musique": "vocals, singing, voice, speech, lyrics, poor quality, distorted, noisy, harsh",
+  "tech_minimal": {
+    "modele": "stable_audio3_small", "duree_s": 95, "role": "musique",
+    "prompt": "Minimal electronic background for a tech explainer video, 100 BPM, soft analog synth pads, gentle plucked arpeggio, light sub bass, subtle hi-hats, steady and unobtrusive, no lead melody, seamless loop"
+  },
+  "lofi_curieux": {
+    "modele": "stable_audio3_small", "duree_s": 95, "role": "musique",
+    "prompt": "Chill lo-fi hip hop instrumental, 85 BPM, warm Rhodes chords, soft boom bap drums, vinyl crackle, curious and relaxed mood, sparse arrangement, seamless loop"
+  },
+  "pulse_energie": {
+    "modele": "stable_audio3_small", "duree_s": 95, "role": "musique",
+    "prompt": "Upbeat modern future garage instrumental, 120 BPM, airy synth chords, crisp shuffled drums, deep bass, optimistic and driving, background music, seamless loop"
+  },
+  "whoosh": {
+    "modele": "stable_audio3_small_sfx", "duree_s": 2, "role": "bruitage",
+    "prompt": "A short soft airy whoosh transition, quick swipe, clean, no impact"
+  },
+  "pop": {
+    "modele": "stable_audio3_small_sfx", "duree_s": 2, "role": "bruitage",
+    "prompt": "A subtle soft UI pop click, bright and short, clean digital interface sound"
+  },
+  "impact": {
+    "modele": "stable_audio3_small_sfx", "duree_s": 2, "role": "bruitage",
+    "prompt": "A deep cinematic boom impact with a short low tail, punchy, clean"
+  }
+}
