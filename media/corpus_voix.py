@@ -24,7 +24,6 @@ Tout vit dans `data/voix/<nom>/` :
 """
 
 import argparse
-import difflib
 import json
 import logging
 import random
@@ -182,18 +181,6 @@ def _convertir(brut: Path, sortie: Path) -> None:
         raise RuntimeError(f"Conversion de {brut.name} échouée : {resultat.stderr[-300:]}")
 
 
-def _part_lue(audio: Path, texte: str) -> float:
-    """Part des mots attendus retrouvés par la transcription, dans l'ordre."""
-    from media.align import _mots_reconnus, _normaliser
-
-    attendus = [m for m in (_normaliser(x) for x in texte.split()) if m]
-    reconnus = [m for m in (_normaliser(x) for x, _d, _f in _mots_reconnus(audio, "small")) if m]
-    if not attendus:
-        return 0.0
-    blocs = difflib.SequenceMatcher(a=attendus, b=reconnus, autojunk=False).get_matching_blocks()
-    return sum(b.size for b in blocs) / len(attendus)
-
-
 def construire_jeu(voix: str, verifier: bool = True, ref: str | None = None) -> Path:
     """
     Convertit les prises, écarte les ratées, choisit la référence, écrit le JSONL.
@@ -218,7 +205,9 @@ def construire_jeu(voix: str, verifier: bool = True, ref: str | None = None) -> 
             rejets.append((id_, f"durée {duree:.1f} s"))
             continue
         if verifier:
-            part = _part_lue(propre, texte)
+            from media.align import part_lue
+
+            part = part_lue(propre, texte, taille_modele="small")
             if part < SEUIL_LECTURE:
                 rejets.append((id_, f"lecture {part:.0%} — à réenregistrer"))
                 continue

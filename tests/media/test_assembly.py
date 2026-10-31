@@ -27,7 +27,14 @@ def test_un_bruitage_par_transition_sous_une_musique_comprimee_par_la_voix():
     graphe = filtre_son(30.0, musique=True, transitions=[7.0, 17.0])
     assert "sidechaincompress" in graphe
     assert graphe.count("adelay=") == 2 and "adelay=6880" in graphe   # 0,12 s avant la slide
-    assert "amix=inputs=4" in graphe and graphe.count("channel_layouts=stereo") == 3
+    assert "amix=inputs=4" in graphe and graphe.count("channel_layouts=stereo") == 4
+
+
+def test_la_voix_seule_est_aussi_normalisee():
+    """-21 LUFS en sortie, le fil TikTok vers -14 : le niveau ne dépend pas de l'habillage."""
+    graphe = filtre_son(30.0, musique=False, transitions=[])
+    assert graphe.endswith(f"{assembly.LOUDNORM},{assembly.FORMAT_MIX}[son]")
+    assert "amix=inputs=1" in graphe
 
 
 def test_sans_musique_le_bruitage_prend_la_deuxieme_entree():

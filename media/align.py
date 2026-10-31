@@ -96,6 +96,28 @@ def _mots_reconnus(audio: Path, taille_modele: str) -> list[tuple[str, float, fl
     ]
 
 
+def part_lue(audio: Path, *textes: str, taille_modele: str = "base") -> float:
+    """
+    Part des mots attendus que la transcription retrouve, dans l'ordre (0 à 1).
+
+    Plusieurs textes admis, le meilleur l'emporte : le script écrit « Tmux », le
+    moteur a lu « Ti-max », et l'un ou l'autre peut revenir de la transcription.
+    Le découpage se fait sur les caractères de mot et non sur les espaces :
+    Whisper écrit « 98 ,8 » et « d 'actions », qui comptaient comme des ratés.
+    """
+    def _jetons(texte: str) -> list[str]:
+        return [_normaliser(t) for t in re.findall(r"\w+", texte)]
+
+    reconnus = _jetons(" ".join(m[0] for m in _mots_reconnus(audio, taille_modele)))
+    meilleure = 0.0
+    for texte in textes:
+        attendus = _jetons(texte)
+        if attendus:
+            blocs = difflib.SequenceMatcher(a=attendus, b=reconnus, autojunk=False).get_matching_blocks()
+            meilleure = max(meilleure, sum(b.size for b in blocs) / len(attendus))
+    return meilleure
+
+
 def _repartir(attendus: list[str], debut: float, fin: float) -> list[Mot]:
     """Répartit uniformément des mots sur un intervalle, faute de mieux."""
     if not attendus:

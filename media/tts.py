@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,7 +45,17 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 FOURNISSEURS = ("gemini", "qwen3", "nvidia")
-FOURNISSEUR_DEFAUT = "gemini"
+# Qwen3 en local depuis le 28/10/2026 ; Gemini ne sert plus que demandé
+# explicitement, et n'est jamais un repli (`_MOTEURS_REPLI`).
+FOURNISSEUR_DEFAUT = "qwen3"
+
+# Relecture des segments Qwen3 par la transcription. Mesuré le 30/10/2026 sur
+# 34 segments de la voix `animateur` : médiane ~0,9, et les trois sous 0,75
+# sont de vrais ratés (« 30.1K » lu « 33K », « Arrêt » dit « Arès »), pas des
+# erreurs de Whisper. Chaque reprise coûte un lancement de Wan2GP (~45 s de
+# chargement, ~9 s par segment refait).
+SEUIL_LECTURE = 0.75
+REPRISES_LECTURE = 2
 
 # Contrairement au LLM, le repli est ici **désactivé par défaut**. La voix est un
 # choix éditorial : basculer d'office sur un autre moteur fabriquerait des
@@ -304,7 +315,8 @@ def message_dependance(fournisseur: str, module: str) -> str:
         return (
             f"Le moteur TTS 'qwen3' est indisponible : {module}. Il exige Wan2GP "
             "installé sur la machine (WAN2GP_DIR dans .env) et n'existe pas dans "
-            "l'image Docker. Autre moteur : --tts-provider gemini ou nvidia."
+            "l'image Docker. Lancer hors Docker (`make dashboard`, `make all`), "
+            "ou un autre moteur : --tts-provider nvidia."
         )
     return (
         f"Le moteur TTS '{fournisseur}' a besoin de '{module}', introuvable dans "
@@ -737,9 +749,58 @@ def generer_audio_qwen3(
     output_dir.mkdir(parents=True, exist_ok=True)
     fichiers = [output_dir / f"{seg_id}.mp3" for seg_id, _, _ in segments]
     termes = script.get("termes_anglais", [])
-    wan2gp.synthetiser([wan2gp.prononcer(texte, termes) for _, texte, _ in segments],
-                       fichiers, voice)
+    textes = [texte for _, texte, _ in segments]
+    prononces = [wan2gp.prononcer(texte, termes) for texte in textes]
+    wan2gp.synthetiser(prononces, fichiers, voice)
+    _reprendre_les_rates(fichiers, textes, prononces, voice)
     return concatenate_segments(fichiers, final_path), fichiers
+
+
+def _part_lue(fichier: Path, texte: str, prononce: str) -> "float | None":
+    """Part du texte que la transcription retrouve ; None sans faster-whisper."""
+    import importlib.util
+
+    if importlib.util.find_spec("faster_whisper") is None:
+        return None
+    from media.align import part_lue
+
+    return part_lue(fichier, texte, prononce)
+
+
+def _reprendre_les_rates(fichiers: list[Path], textes: list[str],
+                         prononces: list[str], voix: str) -> None:
+    """
+    Relit chaque segment et refait, avec une autre graine, ceux qui sont mal lus.
+
+    Qwen3 saute un mot, lit « 30.1K » « 33K », dit « Arès » pour « Arrêt » : rien
+    ne le signalait, le défaut partait en vidéo. Seuls les ratés repassent par
+    Wan2GP, en un lancement par reprise, et la meilleure prise est gardée. Au
+    bout des reprises, un WARNING : la validation humaine tranche.
+    """
+    parts = [_part_lue(f, t, p) for f, t, p in zip(fichiers, textes, prononces)]
+    if None in parts:
+        logger.warning("faster-whisper absent : lecture des segments non vérifiée")
+        return
+    for reprise in range(1, REPRISES_LECTURE + 1):
+        rates = [i for i, p in enumerate(parts) if p < SEUIL_LECTURE]
+        if not rates:
+            return
+        logger.info("Relecture : %s mal lu(s) (%s), reprise %d/%d",
+                    ", ".join(fichiers[i].stem for i in rates),
+                    ", ".join(f"{parts[i]:.0%}" for i in rates), reprise, REPRISES_LECTURE)
+        with tempfile.TemporaryDirectory(prefix="reprise_") as travail:
+            essais = [Path(travail) / f"{i:03d}.mp3" for i in rates]
+            wan2gp.synthetiser([prononces[i] for i in rates], essais, voix,
+                               graine=wan2gp.GRAINE + reprise)
+            for i, essai in zip(rates, essais):
+                part = _part_lue(essai, textes[i], prononces[i])
+                if part > parts[i]:
+                    shutil.copyfile(essai, fichiers[i])
+                    parts[i] = part
+    for i, part in enumerate(parts):
+        if part < SEUIL_LECTURE:
+            logger.warning("Segment %s toujours mal lu (%.0f %% du texte retrouvé) : "
+                           "à écouter avant validation", fichiers[i].stem, part * 100)
 
 
 def _decouper(source: Path, debut: float, fin: float, sortie: Path) -> Path:

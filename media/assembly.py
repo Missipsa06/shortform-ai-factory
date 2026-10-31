@@ -48,6 +48,10 @@ AVANCE_BRUITAGE_S = 0.12
 # La voix de Qwen3 est en mono 24 kHz, et un mix suit le format de sa première
 # entrée : la musique y perdait tout au-dessus de 12 kHz.
 FORMAT_MIX = "aformat=sample_rates=48000:channel_layouts=stereo"
+# Niveau de sortie. Le mix sortait à -21 LUFS, quand le fil TikTok tourne vers
+# -14 : la vidéo sonnait plus bas que ses voisines. loudnorm rééchantillonne à
+# 192 kHz en interne, d'où le FORMAT_MIX qui le suit.
+LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
 
 
 def _ligne_concat(chemin: Path) -> str:
@@ -137,7 +141,8 @@ def filtre_son(duree: float, musique: bool, transitions: list[float]) -> str:
         for i, instant in enumerate(transitions):
             filtres.append(f"[b{i}]adelay={max(0, int((instant - AVANCE_BRUITAGE_S) * 1000))}:all=1[t{i}]")
             pistes.append(f"[t{i}]")
-    filtres.append("".join(pistes) + f"amix=inputs={len(pistes)}:normalize=0:duration=first[son]")
+    filtres.append("".join(pistes) + f"amix=inputs={len(pistes)}:normalize=0:duration=first,"
+                   f"{LOUDNORM},{FORMAT_MIX}[son]")
     return ";".join(filtres)
 
 
@@ -189,17 +194,16 @@ def assemble_clips(clips: list[Path], audio_path: Path, output_path: Path,
             logger.warning("%d genres pour %d clips : pas de bruitage", len(genres), len(clips))
 
     entrees = ["-f", "concat", "-safe", "0", "-i", str(liste), "-i", str(audio_path)]
-    son = ["-map", "0:v", "-map", "1:a"]
-    if musique or transitions:
-        duree = get_audio_duration(audio_path)
-        if musique:
-            entrees += ["-stream_loop", "-1", "-i", str(musique)]   # bouclée si la vidéo est plus longue
-        if transitions:
-            entrees += ["-i", str(bruitage)]
-        son = ["-filter_complex", filtre_son(duree, musique is not None, transitions),
-               "-map", "0:v", "-map", "[son]"]
-        logger.info("Habillage sonore : musique %s, %d transition(s)",
-                    musique.stem if musique else "aucune", len(transitions))
+    if musique:
+        entrees += ["-stream_loop", "-1", "-i", str(musique)]   # bouclée si la vidéo est plus longue
+    if transitions:
+        entrees += ["-i", str(bruitage)]
+    # Toujours le graphe, même voix seule : c'est lui qui normalise le niveau.
+    son = ["-filter_complex",
+           filtre_son(get_audio_duration(audio_path), musique is not None, transitions),
+           "-map", "0:v", "-map", "[son]"]
+    logger.info("Habillage sonore : musique %s, %d transition(s)",
+                musique.stem if musique else "aucune", len(transitions))
 
     cmd = [
         find_ffmpeg(), "-y", *entrees, *son,

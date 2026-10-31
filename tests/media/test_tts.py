@@ -162,7 +162,7 @@ def test_voix_disponibles_couvre_les_trois_moteurs():
 
 def test_voix_par_defaut_qwen3(monkeypatch):
     monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
-    assert _voix_par_defaut("qwen3") == "animateur"
+    assert _voix_par_defaut("qwen3") == "animateur_vif"
 
 
 # ── Lotissement des appels de synthèse ───────────────────────────────────────
@@ -271,7 +271,7 @@ def test_basculer_sur_qwen3_garde_la_voix_de_la_chaine(monkeypatch):
     """Tout l'intérêt du repli local : la vidéo garde la voix de la chaîne."""
     monkeypatch.setenv("TTS_FALLBACK", "1")
     monkeypatch.delenv("QWEN3_TTS_VOICE", raising=False)
-    assert _basculer(_cause()) == ("qwen3", "animateur")
+    assert _basculer(_cause()) == ("qwen3", "animateur_vif")
 
 
 def test_basculer_sur_nvidia_respecte_la_voix_configuree(monkeypatch):
@@ -355,13 +355,14 @@ def test_gemini_na_rien_a_verifier():
 
 def test_qwen3_sans_wan2gp_est_signale_avant_de_produire(monkeypatch):
     """Sous Airflow, WAN2GP_DIR n'existe pas : le contrôle préalable doit le
-    dire avant l'appel au LLM, et le message nommer les autres moteurs."""
+    dire avant l'appel au LLM, et le message nommer la sortie : hors Docker, ou nvidia."""
     from media.tts import dependance_manquante, message_dependance
 
     monkeypatch.delenv("WAN2GP_DIR", raising=False)
     absence = dependance_manquante("qwen3")
     assert "WAN2GP_DIR" in absence
-    assert "gemini" in message_dependance("qwen3", absence)
+    message = message_dependance("qwen3", absence)
+    assert "nvidia" in message and "make dashboard" in message
 
 
 def test_moteur_inconnu_ne_reclame_rien():
@@ -507,7 +508,7 @@ def test_qwen3_reprend_la_narration_meme_apres_le_premier_lot(monkeypatch, tmp_p
 
     tts.generer_audio_groupe(script, tmp_path / "seg", tmp_path / "f.mp3",
                              provider="gemini")
-    assert repris == ["animateur"]
+    assert repris == ["animateur_vif"]
 
 
 def test_nvidia_reste_interdit_apres_le_premier_lot(monkeypatch, tmp_path):

@@ -59,14 +59,54 @@ def test_sans_termes_anglais_aucun_pluriel_n_est_touche():
     assert prononcer("Des agents et des modèles.") == "Des agents et des modèles."
 
 
-def test_chaque_segment_finit_par_une_pause(monkeypatch, tmp_path):
-    """Qwen3 s'arrête sur son dernier mot : sans silence ajouté, la slide
-    suivante enchaînait sans respiration."""
+@pytest.mark.parametrize("ecrit,dit", [
+    ("30.1K heures de vidéo", "trente mille cent heures de vidéo"),
+    ("663 articles, 7 500 visiteurs et 45000 vues", "663 articles, sept mille cinq cents visiteurs et quarante-cinq mille vues"),
+    ("depuis 1997, 98,8 %", "depuis 1997, 98,8 %"),                         # années et décimales lues telles quelles
+    ("1.5M de vues et 7B de paramètres", "1,5 million de vues et 7 milliards de paramètres"),
+    ("un FID de 3.17 sur CIFAR", "un FID de 3,17 sur CIFAR"),
+    ("le prix chute de -80 %", "le prix chute de moins 80 %"),
+    ("Qwen gagne +13,9 points, x3 plus vite", "Qwen gagne plus 13,9 points, fois 3 plus vite"),
+    ("GPT-5.6 et Qwen3.5 de 2024-2026", "GPT-5.6 et Qwen3.5 de 2024-2026"),   # des noms, pas des nombres
+    ("88,6 % sur RoboTwin 2.0", "88,6 % sur RoboTwin 2.0"),                 # une version, pas une décimale
+])
+def test_les_nombres_s_ecrivent_comme_ils_se_disent(ecrit, dit):
+    """Qwen3 lit ce qu'on lui donne : « 30.1K » était entendu « 30 points cas »."""
+    assert prononcer(ecrit) == dit
+
+
+@pytest.mark.parametrize("n,lettres", [
+    (21, "vingt et un"), (71, "soixante et onze"), (77, "soixante-dix-sept"), (80, "quatre-vingts"),
+    (81, "quatre-vingt-un"), (91, "quatre-vingt-onze"), (100, "cent"), (200, "deux cents"),
+    (201, "deux cent un"), (1000, "mille"), (80000, "quatre-vingt mille"), (200000, "deux cent mille"),
+    (30100, "trente mille cent"), (2_000_000, "deux millions"), (1_200_000_000, "un milliard deux cents millions"),
+])
+def test_les_entiers_s_ecrivent_en_toutes_lettres(n, lettres):
+    assert wan2gp.en_lettres(n) == lettres
+
+
+def _filtres_ffmpeg(monkeypatch, tmp_path) -> str:
+    """Chaîne de filtres -af que `_en_mp3` passe à FFmpeg."""
     vus: list[list[str]] = []
     monkeypatch.setattr(wan2gp.subprocess, "run",
                         lambda cmd, **_: vus.append(cmd) or subprocess.CompletedProcess(cmd, 0))
     wan2gp._en_mp3(tmp_path / "a.wav", tmp_path / "a.mp3")
-    assert f"apad=pad_dur={wan2gp.PAUSE_FIN_S}" in vus[0]
+    return vus[0][vus[0].index("-af") + 1]
+
+
+def test_chaque_segment_commence_proprement(monkeypatch, tmp_path):
+    """Attaque au premier échantillon, mesurée le 28/10/2026 : début entendu coupé."""
+    filtres = _filtres_ffmpeg(monkeypatch, tmp_path)
+    assert "afade=t=in" in filtres
+    assert f"adelay={int(wan2gp.ATTAQUE_S * 1000)}" in filtres
+    # Le rognage passe avant le délai, sinon il retirerait le silence ajouté.
+    assert filtres.index("silenceremove") < filtres.index("adelay")
+
+
+def test_chaque_segment_finit_par_une_pause(monkeypatch, tmp_path):
+    """Qwen3 s'arrête sur son dernier mot : sans silence ajouté, la slide
+    suivante enchaînait sans respiration."""
+    assert f"apad=pad_dur={wan2gp.PAUSE_FIN_S}" in _filtres_ffmpeg(monkeypatch, tmp_path)
 
 
 # ── Installation ──────────────────────────────────────────────────────────────
@@ -124,8 +164,18 @@ def wan2gp_imite(monkeypatch, tmp_path):
 
     monkeypatch.setattr(wan2gp.subprocess, "run", faux_run)
     monkeypatch.setattr(wan2gp, "_en_mp3",
-                        lambda source, sortie: sortie.write_text(source.read_text()))
+                        lambda source, sortie, timbre="": sortie.write_text(source.read_text()))
     return recues, oublis
+
+
+def test_les_reglages_d_une_voix_suivent_son_extrait(monkeypatch, tmp_path):
+    """Sans fichier, les défauts ; avec, l'échantillonnage et le timbre de l'extrait."""
+    monkeypatch.setattr(wan2gp, "VOIX_DIR", tmp_path)
+    assert wan2gp.reglages_voix("nue") == {"temperature": wan2gp.TEMPERATURE,
+                                           "top_k": wan2gp.TOP_K, "timbre": ""}
+    (tmp_path / "vive.json").write_text('{"temperature": 0.95, "top_k": 20, '
+                                        '"timbre": "highshelf=f=6500:g=6"}', encoding="utf-8")
+    assert wan2gp.reglages_voix("vive")["top_k"] == 20
 
 
 def test_chaque_texte_atterrit_dans_son_fichier(wan2gp_imite, tmp_path):
@@ -195,6 +245,7 @@ def test_la_narration_qwen3_garde_un_fichier_par_segment(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tts.wan2gp, "synthetiser", faux_synthetiser)
     monkeypatch.setattr(tts, "concatenate_segments", lambda fichiers, cible: cible)
+    monkeypatch.setattr(tts, "_part_lue", lambda f, t, p: 1.0)
 
     script = {"hook": "Tmux, vraiment ?", "slides": [{"numero": 1, "titre": "Un",
               "contenu": "Deux."}], "conclusion": "Fin."}
@@ -204,3 +255,43 @@ def test_la_narration_qwen3_garde_un_fichier_par_segment(monkeypatch, tmp_path):
     assert [f.name for f in fichiers] == ["hook.mp3", "slide_01.mp3", "conclusion.mp3"]
     assert recu["textes"][0] == "Ti-max, vraiment ?"
     assert final == tmp_path / "final.mp3"
+
+
+def _relecture_imitee(monkeypatch, tmp_path, notes: dict[str, list[float]]):
+    """Chaque prise écrit sa graine ; `notes[texte]` donne la lecture par prise."""
+    import media.tts as tts
+
+    lancements = []
+
+    def faux_synthetiser(textes, sorties, voix, graine=wan2gp.GRAINE):
+        lancements.append((list(textes), graine))
+        for texte, s in zip(textes, sorties):
+            s.write_text(f"{texte}|{graine}")
+
+    def fausse_lecture(fichier, texte, prononce):
+        _, graine = fichier.read_text().split("|")
+        return notes[texte][int(graine) - wan2gp.GRAINE]
+
+    monkeypatch.setattr(tts.wan2gp, "synthetiser", faux_synthetiser)
+    monkeypatch.setattr(tts, "_part_lue", fausse_lecture)
+    textes = list(notes)
+    fichiers = [tmp_path / f"{i}.mp3" for i in range(len(textes))]
+    faux_synthetiser(textes, fichiers, "animateur")
+    lancements.clear()
+    tts._reprendre_les_rates(fichiers, textes, textes, "animateur")
+    return lancements, [f.read_text() for f in fichiers]
+
+
+def test_seul_le_segment_mal_lu_est_refait_avec_une_autre_graine(monkeypatch, tmp_path):
+    lancements, prises = _relecture_imitee(
+        monkeypatch, tmp_path, {"bon": [0.95], "rate": [0.40, 0.92]})
+    assert lancements == [(["rate"], wan2gp.GRAINE + 1)]
+    assert prises == [f"bon|{wan2gp.GRAINE}", f"rate|{wan2gp.GRAINE + 1}"]
+
+
+def test_la_meilleure_prise_reste_quand_aucune_ne_passe(monkeypatch, tmp_path):
+    """Deux reprises au plus ; une reprise pire que l'original ne le remplace pas."""
+    lancements, prises = _relecture_imitee(
+        monkeypatch, tmp_path, {"rate": [0.50, 0.70, 0.30]})
+    assert len(lancements) == 2
+    assert prises == [f"rate|{wan2gp.GRAINE + 1}"]

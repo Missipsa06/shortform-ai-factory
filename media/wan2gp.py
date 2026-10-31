@@ -55,7 +55,7 @@ VOIX_ENV = "QWEN3_TTS_VOICE"
 # Voix inventée par Qwen3 VoiceDesign (28/10/2026), et non plus Charon : cloner
 # une sortie de Gemini TTS rapproche du « modèle concurrent » que ses conditions
 # interdisent. Elle n'appartient à personne, les poids sont sous Apache 2.0.
-VOIX_DEFAUT = "animateur"
+VOIX_DEFAUT = "animateur_vif"
 
 ASSETS = Path(__file__).parent / "assets"
 # Une voix = deux fichiers de même nom : l'extrait (.mp3) et sa transcription
@@ -72,6 +72,8 @@ GRAINE = 42           # même texte, même audio : une reprise ne change pas la 
 # retrouvé contre 73 %, et une part de parole voisée (55 à 61 %) proche de celle
 # de Gemini (48 à 53 %) là où 0,9 enchaînait sans respirer (64 à 69 %).
 TEMPERATURE = 0.7
+TOP_K = 50            # défaut de Wan2GP et de Qwen
+DUREE_MAX_S = 90
 DEBIT_MP3 = "128k"
 
 # Silence ajouté à la fin de chaque segment. Qwen3 s'arrête presque sur son
@@ -122,6 +124,21 @@ DELAI_PAR_CLIP_S = 600
 def voix_disponibles() -> list[str]:
     """Voix clonables : chaque extrait de media/assets/voix/ qui a sa transcription."""
     return sorted(p.stem for p in VOIX_DIR.glob("*.mp3") if p.with_suffix(".txt").exists())
+
+
+def reglages_voix(voix: str) -> dict:
+    """
+    Réglages propres à une voix (`<voix>.json` à côté de l'extrait), sur les défauts.
+
+    L'échantillonnage et le timbre dépendent de l'extrait : un extrait à
+    l'intonation marquée veut une température plus haute pour la prolonger, et
+    l'égalisation compense le spectre propre à chaque référence.
+    """
+    reglages = {"temperature": TEMPERATURE, "top_k": TOP_K, "timbre": ""}
+    chemin = VOIX_DIR / f"{voix}.json"
+    if chemin.exists():
+        reglages |= json.loads(chemin.read_text(encoding="utf-8"))
+    return reglages
 
 
 def _installation() -> "tuple[Path, Path] | str":
@@ -305,7 +322,7 @@ def prononcer(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str:
     return texte
 
 
-def _taches(textes: list[str], voix: str) -> list[dict]:
+def _taches(textes: list[str], voix: str, graine: int = GRAINE) -> list[dict]:
     """File Wan2GP : une tâche par texte, nommée par son rang pour la retrouver."""
     extrait = VOIX_DIR / f"{voix}.mp3"
     transcription = VOIX_DIR / f"{voix}.txt"
@@ -315,6 +332,7 @@ def _taches(textes: list[str], voix: str) -> list[dict]:
             f"dans {VOIX_DIR}. Disponibles : {', '.join(voix_disponibles()) or 'aucune'}"
         )
     reference = transcription.read_text(encoding="utf-8").strip()
+    reglages = reglages_voix(voix)
     return [
         {
             "model_type": MODELE,
@@ -323,8 +341,12 @@ def _taches(textes: list[str], voix: str) -> list[dict]:
             "audio_prompt_type": "A",
             "audio_guide": str(extrait.resolve()),
             "alt_prompt": reference,
-            "seed": GRAINE,
-            "temperature": TEMPERATURE,
+            "seed": graine,
+            "temperature": reglages["temperature"],
+            "top_k": reglages["top_k"],
+            # Wan2GP plafonne la génération à 30 s par défaut (375 codes à
+            # 12,5/s) et coupe net, sans erreur, un segment plus long.
+            "duration_seconds": DUREE_MAX_S,
             "repeat_generation": 1,
             # Sans nom imposé, Wan2GP nomme d'après l'heure et le début du
             # texte : deux segments qui commencent pareil deviendraient
@@ -335,12 +357,12 @@ def _taches(textes: list[str], voix: str) -> list[dict]:
     ]
 
 
-def _en_mp3(source: Path, sortie: Path) -> None:
+def _en_mp3(source: Path, sortie: Path, timbre: str = "") -> None:
     """Convertit une sortie Wan2GP au MP3 qu'attend le reste du pipeline."""
     sortie.parent.mkdir(parents=True, exist_ok=True)
     filtres = ("silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05,"
                f"afade=t=in:d=0.01,adelay={int(ATTAQUE_S * 1000)}:all=1,"
-               f"apad=pad_dur={PAUSE_FIN_S}")
+               f"apad=pad_dur={PAUSE_FIN_S}") + (f",{timbre}" if timbre else "")
     resultat = subprocess.run(
         [find_ffmpeg(), "-y", "-i", str(source),
          "-af", filtres, "-b:a", DEBIT_MP3, str(sortie)],
@@ -351,7 +373,8 @@ def _en_mp3(source: Path, sortie: Path) -> None:
                            f"{(resultat.stderr or '')[-300:]}")
 
 
-def synthetiser(textes: list[str], sorties: list[Path], voix: str = "") -> None:
+def synthetiser(textes: list[str], sorties: list[Path], voix: str = "",
+                graine: int = GRAINE) -> None:
     """
     Synthétise chaque texte dans le fichier de même rang, en un lancement.
 
@@ -359,6 +382,8 @@ def synthetiser(textes: list[str], sorties: list[Path], voix: str = "") -> None:
         textes:  Textes à dire, déjà passés par `prononcer`
         sorties: Un MP3 par texte, dans le même ordre
         voix:    Nom d'une voix de media/assets/voix/ ; vide = QWEN3_TTS_VOICE
+        graine:  Autre que GRAINE pour reprendre un segment mal lu : la même
+                 graine redonnerait la même prise
 
     Raises:
         RuntimeError: Wan2GP absent, en échec, ou un segment sans audio. Un trou
@@ -368,14 +393,15 @@ def synthetiser(textes: list[str], sorties: list[Path], voix: str = "") -> None:
     if len(textes) != len(sorties):
         raise ValueError("Un fichier de sortie par texte")
     voix = voix or os.getenv(VOIX_ENV) or VOIX_DEFAUT
-    taches = _taches(textes, voix)
+    taches = _taches(textes, voix, graine)
 
     with tempfile.TemporaryDirectory(prefix="wan2gp_") as travail:
         travail = Path(travail)
         logger.info("Qwen3 via Wan2GP : %d segment(s), voix %s", len(textes), voix)
         journal = _executer(taches, travail)
+        timbre = reglages_voix(voix)["timbre"]
         for rang, sortie in enumerate(sorties):
-            _en_mp3(_produit(travail, rang, textes, "segment", journal), sortie)
+            _en_mp3(_produit(travail, rang, textes, "segment", journal), sortie, timbre)
 
 
 def generer_images(prompts: list[str], sorties: list[Path],
