@@ -5,9 +5,10 @@ Le pipeline n'a besoin que d'une chose du LLM : (system, prompt) → texte JSON.
 Ce module isole cette opération pour permettre de comparer la qualité de
 vulgarisation entre fournisseurs sans toucher au reste du code.
 
-Fournisseur choisi via LLM_PROVIDER dans .env (défaut : mistral) :
+Fournisseur choisi via LLM_PROVIDER dans .env (défaut : ollama, en local) :
 
-    gemini      Google AI Studio    GEMINI_API_KEY
+    ollama      Ollama (local)      aucune clé
+    gemini     Google AI Studio    GEMINI_API_KEY
     mistral     Mistral             MISTRAL_API_KEY
     openrouter  OpenRouter          OPENROUTER_API_KEY  (~15 modèles gratuits)
     nvidia      NVIDIA NIM          NVIDIA_API_KEY      (même clé que la TTS nvidia)
@@ -48,7 +49,7 @@ MAX_TOKENS = 4096
 # s'avère structurellement plus lent (nemotron et son raisonnement).
 LLM_DELAI = 180.0
 
-DEFAULT_PROVIDER = "mistral"
+DEFAULT_PROVIDER = "ollama"
 
 # Le repli est actif par défaut : sur un script, l'écart de qualité entre
 # fournisseurs est mineur, et le fournisseur retenu est inscrit dans le JSON
@@ -57,12 +58,12 @@ DEFAULT_PROVIDER = "mistral"
 FALLBACK_ENV = "LLM_FALLBACK"
 _FAUX = frozenset({"0", "false", "non", "no", "off"})
 
-# Ordre des replis : les deux paliers gratuits éprouvés d'abord, OpenRouter
-# ensuite — ses modèles gratuits changent au fil des semaines, donc moins sûr
-# —, nvidia après (un seul modèle vérifié, contre une quinzaine chez
-# OpenRouter), Kimi en dernier puisqu'il n'a aucun palier gratuit. Un repli
-# automatique ne doit pas engager de dépense par surprise.
-ORDRE_REPLI = ("gemini", "mistral", "openrouter", "nvidia", "kimi")
+# Ordre des replis, depuis le passage en local (28/10/2026) : OpenRouter et
+# NVIDIA seulement, pour le jour où Ollama manque — sous Airflow, ou la carte
+# occupée. Mistral, Gemini et Kimi restent déclarés et se choisissent
+# explicitement (`--provider`), jamais en repli. OpenRouter d'abord : une
+# quinzaine de modèles gratuits, contre trois vérifiés chez NVIDIA.
+ORDRE_REPLI = ("openrouter", "nvidia")
 
 
 @dataclass(frozen=True)
@@ -87,9 +88,53 @@ class Provider:
     # coûte qu'un aller-retour réseau par candidat. À surveiller malgré tout
     # avant d'en ajouter à un deuxième fournisseur, l'effet étant cumulatif.
     modeles_secours: tuple[str, ...] = ()
+    # Un serveur local ne demande pas de clé : sans ce drapeau, le fournisseur
+    # serait refusé comme mal configuré avant même d'être appelé.
+    cle_requise: bool = True
+    # Variable qui surcharge `base_url` : le même serveur Ollama s'atteint par
+    # 127.0.0.1 depuis Windows et par host.docker.internal depuis un conteneur.
+    url_env: str = ""
+    delai: float = LLM_DELAI
+
+
+# Ollama local (WSL ou Windows). Contexte imposé par un modèle dérivé : mesuré le
+# 28/10/2026, l'endpoint compatible OpenAI tronque à 4 096 jetons et ignore
+# `num_ctx`, alors qu'un prompt de script en fait jusqu'à ~20 000 (gabarit ~5 000,
+# matière multi-sources ~7 000, réponse 4 096, script renvoyé en correction).
+OLLAMA_CONTEXTE = int(os.getenv("OLLAMA_CONTEXTE", "20480"))
+# Plancher, et caractères par jeton pour estimer un prompt : mesuré, 22 200
+# caractères de prompt français et JSON font 5 803 jetons (3,8 par jeton) ; 3,2
+# laisse de la marge. Un contexte juste suffisant tient en VRAM : Qwen3.5 rendait
+# un script en 75 s à 12K et en 120 s à 20K, une part du modèle passant au CPU.
+OLLAMA_CONTEXTE_MIN = 8192
+CARACTERES_PAR_JETON = 3.2
+
+
+def contexte_necessaire(system: str, prompt: str, max_tokens: int) -> int:
+    """Plus petit contexte, en multiple de 4 096, qui tient prompt et réponse."""
+    jetons = (len(system) + len(prompt)) / CARACTERES_PAR_JETON + max_tokens
+    return max(OLLAMA_CONTEXTE_MIN, min(OLLAMA_CONTEXTE, -(-int(jetons) // 4096) * 4096))
+OLLAMA_URL_DEFAUT = "http://127.0.0.1:11434/v1"
 
 
 PROVIDERS: dict[str, Provider] = {
+    "ollama": Provider(
+        name="ollama",
+        key_env="OLLAMA_API_KEY",
+        model_env="OLLAMA_MODEL",
+        # Comparatif du 28/10/2026 sur trois vraies sources, graphe complet :
+        # 34 à 63 s par script, 0 fait non tracé, 0 à 2 corrections. Qwen3.5 9B
+        # prenait 160 à 255 s et arrondissait les chiffres ; qwen3:8b ne tient pas
+        # en 8 Go avec son contexte ; Ministral 3 8B restait bloqué.
+        default_model="gemma4:e4b",
+        base_url=OLLAMA_URL_DEFAUT,
+        signup_url="https://ollama.com/download",
+        cle_requise=False,
+        url_env="OLLAMA_URL",
+        # Chargement du modèle, lecture de ~15 000 jetons de prompt, puis 4 096
+        # en sortie à 30-50 jetons/s sur une RTX 4060 : 180 s ne suffisent pas.
+        delai=600.0,
+    ),
     "kimi": Provider(
         name="kimi",
         key_env="MOONSHOT_API_KEY",
@@ -302,6 +347,8 @@ def resolve_base_url(prov: Provider) -> str:
     Raises:
         EnvironmentError: Identifiant de compte manquant alors qu'il est requis
     """
+    if prov.url_env and os.getenv(prov.url_env, "").strip():
+        return os.getenv(prov.url_env).strip()
     if not prov.base_url or "{compte}" not in prov.base_url:
         return prov.base_url or ""
 
@@ -323,6 +370,8 @@ def _api_key(prov: Provider) -> str:
         EnvironmentError: Si la clé est absente des variables d'environnement
     """
     key = os.getenv(prov.key_env, "").strip()
+    if not key and not prov.cle_requise:
+        return prov.name          # le SDK OpenAI exige une valeur, le serveur l'ignore
     if not key:
         raise EnvironmentError(
             f"{prov.key_env} manquant dans .env — nécessaire pour le fournisseur "
@@ -359,7 +408,7 @@ def _chaine(demande: Provider) -> list[Provider]:
         for nom in ORDRE_REPLI
         if nom != demande.name
         and nom in PROVIDERS
-        and os.getenv(PROVIDERS[nom].key_env, "").strip()
+        and (not PROVIDERS[nom].cle_requise or os.getenv(PROVIDERS[nom].key_env, "").strip())
     ]
     return chaine
 
@@ -481,6 +530,12 @@ def _call_openai_compatible(
         # paramètre, vérifié en direct, il ouvre sa réponse par un
         # raisonnement en anglais avant le JSON demandé.
         extra["reasoning"] = {"exclude": True}
+    if prov.name == "ollama":
+        # qwen3 raisonne par défaut et le fait dans un champ à part : mesuré, ses
+        # 150 jetons y passaient tous et le contenu revenait vide. `think: false`
+        # n'y change rien par cet endpoint ; `reasoning_effort` si.
+        extra["reasoning_effort"] = "none"
+        modele = variante_ollama(prov, modele, contexte_necessaire(system, prompt, max_tokens))
 
     client = client_openai(prov)
     completion = client.chat.completions.create(
@@ -528,7 +583,64 @@ def client_openai(prov: Provider) -> "OpenAI":
     from openai import OpenAI
 
     return OpenAI(api_key=_api_key(prov), base_url=resolve_base_url(prov),
-                  timeout=LLM_DELAI, max_retries=0)
+                  timeout=prov.delai, max_retries=0)
+
+
+# ── Ollama : contexte et mémoire GPU ──────────────────────────────────────────
+
+_variantes_pretes: set[str] = set()
+
+
+def _api_ollama(prov: Provider) -> str:
+    """Racine de l'API native d'Ollama (sans le /v1 compatible OpenAI)."""
+    return resolve_base_url(prov).rstrip("/").removesuffix("/v1")
+
+
+def variante_ollama(prov: Provider, modele: str, contexte: int = OLLAMA_CONTEXTE) -> str:
+    """
+    Nom d'un modèle dérivé de `modele` au contexte donné, créé au besoin une fois
+    par processus. L'endpoint compatible OpenAI ne transmet pas `num_ctx` : le
+    contexte doit être celui du modèle lui-même.
+
+    Raises:
+        RuntimeError: Modèle de base absent du serveur (`ollama pull` à faire)
+    """
+    import requests
+
+    nom = f"{modele}-ctx{contexte}"
+    if nom in _variantes_pretes:
+        return nom
+    api = _api_ollama(prov)
+    presents = {m["name"] for m in requests.get(f"{api}/api/tags", timeout=20).json().get("models", [])}
+    if nom not in presents:
+        if modele not in presents and f"{modele}:latest" not in presents:
+            raise RuntimeError(f"Modèle Ollama absent : {modele} — à télécharger par « ollama pull {modele} »")
+        reponse = requests.post(f"{api}/api/create", timeout=120, json={
+            "model": nom, "from": modele, "parameters": {"num_ctx": contexte}, "stream": False})
+        reponse.raise_for_status()
+        logger.info("Modèle Ollama %s créé (contexte %d)", nom, contexte)
+    _variantes_pretes.add(nom)
+    return nom
+
+
+def liberer_ollama() -> None:
+    """
+    Décharge les modèles qu'Ollama garde en mémoire (5 min par défaut).
+
+    Sur 8 Go de VRAM, Qwen3-TTS manquerait de place juste après le script.
+    Sans effet, et sans erreur, si Ollama ne tourne pas.
+    """
+    import requests
+
+    api = _api_ollama(PROVIDERS["ollama"])
+    try:
+        charges = requests.get(f"{api}/api/ps", timeout=10).json().get("models", [])
+        for m in charges:
+            requests.post(f"{api}/api/generate", json={"model": m["name"], "keep_alive": 0}, timeout=60)
+        if charges:
+            logger.info("Ollama : %d modèle(s) déchargé(s) de la mémoire GPU", len(charges))
+    except requests.RequestException:
+        pass
 
 
 # ── Point d'entrée ────────────────────────────────────────────────────────────
@@ -562,6 +674,8 @@ def call_llm(
     max_tokens: int = MAX_TOKENS,
     trace: dict | None = None,
     valider: "callable | None" = None,
+    modele: str | None = None,
+    repli: bool = True,
 ) -> str:
     """
     Envoie un couple (system, prompt) au fournisseur configuré, avec repli.
@@ -579,6 +693,10 @@ def call_llm(
         trace:      Dictionnaire renseigné par l'appel avec le fournisseur ayant
                     réellement répondu ('provider', 'model', 'replis'). Sans lui,
                     l'appelant ne peut pas savoir qui a produit le texte.
+        modele:     Modèle imposé au fournisseur demandé, à la place de celui de
+                    .env : le juge du script n'est pas le modèle qui l'écrit.
+        repli:      False pour n'essayer que le fournisseur demandé — un juge
+                    local indisponible se saute, il ne se remplace pas par le cloud.
 
     Returns:
         Le texte brut renvoyé par le modèle (non parsé)
@@ -595,7 +713,7 @@ def call_llm(
     # une erreur de configuration, qu'il faut signaler telle quelle.
     _api_key(demande)
 
-    chaine = _chaine(demande)
+    chaine = _chaine(demande) if repli else [demande]
     echecs: list[str] = []
     replis: list[str] = []
     quota_epuise = False
@@ -611,7 +729,7 @@ def call_llm(
         # Plusieurs modèles possibles par fournisseur, du plus capable au moins.
         # Un modèle retiré du catalogue ou momentanément saturé ne doit pas faire
         # renoncer à l'ensemble du fournisseur.
-        candidats = modeles_candidats(prov)
+        candidats = [modele] if modele and prov is demande else modeles_candidats(prov)
         for rang, model in enumerate(candidats):
             if rang == 0:
                 logger.info("Appel LLM — fournisseur=%s modèle=%s", prov.name, model)
@@ -668,7 +786,7 @@ def call_llm(
     if len(chaine) == 1 and _repli_actif():
         conseil += (
             " Aucun autre fournisseur n'a de clé configurée dans .env — "
-            "GEMINI_API_KEY ou MISTRAL_API_KEY offrent un repli gratuit."
+            "OPENROUTER_API_KEY ou NVIDIA_API_KEY offrent un repli gratuit."
         )
     raise RuntimeError(f"Appel LLM échoué ({detail}).{conseil}")
 
@@ -680,6 +798,8 @@ def call_llm_json(
     max_tokens: int = MAX_TOKENS,
     trace: dict | None = None,
     champs_requis: "tuple[str, ...]" = (),
+    modele: str | None = None,
+    repli: bool = True,
 ) -> dict:
     """
     Comme call_llm, mais retourne le JSON parsé.
@@ -715,7 +835,7 @@ def call_llm_json(
             for e in charge[c]
         )
     raw = call_llm(system, prompt, provider=provider, max_tokens=max_tokens,
-                   trace=trace, valider=_conforme)
+                   trace=trace, valider=_conforme, modele=modele, repli=repli)
     candidate = extract_json(raw)
 
     try:

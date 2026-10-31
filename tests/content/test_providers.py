@@ -101,7 +101,7 @@ def test_resolve_provider_inconnu_leve():
 
 def test_resolve_provider_defaut_sans_argument(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    assert resolve_provider(None).name == "mistral"
+    assert resolve_provider(None).name == "ollama"
 
 
 def test_resolve_provider_lit_env(monkeypatch):
@@ -129,8 +129,25 @@ def test_chaque_fournisseur_a_une_config_complete(nom):
     assert prov.name == nom
     assert prov.key_env
     assert prov.default_model
-    assert prov.base_url.startswith("https://")
+    # Seul un serveur local, sans clé, peut se passer de HTTPS : rien ne quitte la machine.
+    assert prov.base_url.startswith("https://") or not prov.cle_requise
     assert prov.signup_url.startswith("https://")
+
+
+def test_ollama_se_passe_de_cle(monkeypatch):
+    from content.providers import _api_key
+
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    assert _api_key(PROVIDERS["ollama"])            # une valeur factice, pas une erreur
+
+
+def test_l_url_d_ollama_se_surcharge_pour_docker(monkeypatch):
+    from content.providers import resolve_base_url
+
+    monkeypatch.setenv("OLLAMA_URL", "http://host.docker.internal:11434/v1")
+    assert resolve_base_url(PROVIDERS["ollama"]) == "http://host.docker.internal:11434/v1"
+    monkeypatch.delenv("OLLAMA_URL")
+    assert resolve_base_url(PROVIDERS["ollama"]).startswith("http://127.0.0.1")
 
 
 def test_api_key_manquante_leve_avec_le_lien_dinscription(monkeypatch):
@@ -156,7 +173,7 @@ def test_chaine_ecarte_les_fournisseurs_sans_cle(monkeypatch):
     monkeypatch.delenv(FALLBACK_ENV, raising=False)
     for prov in PROVIDERS.values():
         monkeypatch.delenv(prov.key_env, raising=False)
-    monkeypatch.setenv(PROVIDERS["gemini"].key_env, "une-cle")
+    monkeypatch.setenv(PROVIDERS["nvidia"].key_env, "une-cle")
 
     chaine = _chaine(PROVIDERS["mistral"])
 
@@ -164,7 +181,16 @@ def test_chaine_ecarte_les_fournisseurs_sans_cle(monkeypatch):
     # c'est call_llm() qui vérifie sa clé séparément et lève avant d'appeler
     # _chaine. Les autres maillons sont filtrés à la clé disponible.
     assert chaine[0].name == "mistral"
-    assert [p.name for p in chaine[1:]] == ["gemini"]
+    assert [p.name for p in chaine[1:]] == ["nvidia"]
+
+
+def test_le_repli_n_appelle_qu_openrouter_et_nvidia(monkeypatch):
+    """Full local : Ollama d'abord, et aucune autre API qu'OpenRouter et NVIDIA."""
+    monkeypatch.delenv(FALLBACK_ENV, raising=False)
+    for prov in PROVIDERS.values():
+        monkeypatch.setenv(prov.key_env, "une-cle")
+
+    assert [p.name for p in _chaine(PROVIDERS["ollama"])] == ["ollama", "openrouter", "nvidia"]
 
 
 def test_chaine_ne_repete_pas_le_fournisseur_demande(monkeypatch):

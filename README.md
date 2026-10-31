@@ -161,14 +161,16 @@ d'environnement choisit le moteur, une option de ligne de commande le surcharge.
 
 | Rôle | Variable | Valeurs | Défaut |
 |---|---|---|---|
-| Script | `LLM_PROVIDER` | `gemini`, `mistral`, `openrouter`, `nvidia`, `kimi` | `mistral` |
-| Voix | `TTS_PROVIDER` | `qwen3` (`animateur`, local), `gemini` (Charon), `nvidia` (Louise, Pascal) | `gemini` dans le code, `qwen3` dans `.env` |
-| Illustrations | `IMAGE_PROVIDER` | `pexels`, `cloudflare`, `wan2gp` (local) | `pexels` |
+| Script | `LLM_PROVIDER` | `ollama` (Gemma4 E4B, local), `openrouter`, `nvidia` ; `gemini`, `mistral`, `kimi` sur demande | `ollama` |
+| Voix | `TTS_PROVIDER` | `qwen3` (`animateur_vif`, local), `nvidia` (Louise, Pascal) ; `gemini` (Charon) sur demande | `qwen3` |
+| Illustrations | `IMAGE_PROVIDER` | `wan2gp` (local) ; `pexels`, `cloudflare` sur demande | `wan2gp` |
 | Vecteurs | `EMBEDDING_MODEL` | tout modèle fastembed (local) | MiniLM multilingue |
 
 **Repli automatique.** Un quota journalier épuisé ou un service surchargé ne doit
 pas coûter une exécution entière. `content/quota.py` distingue les 429 « par
-minute » — on réessaie — des 429 « par jour » — on change de fournisseur. Le
+minute » — on réessaie — des 429 « par jour » — on change de fournisseur. Tout
+tourne en local par défaut ; **seuls OpenRouter puis NVIDIA servent de repli**,
+aucune autre API. Le
 repli est actif par défaut sur le LLM, **inactif sur la voix** : basculer d'office
 produirait des vidéos dans une voix non retenue, défaut qui ne s'entend qu'à la
 lecture. `TTS_FALLBACK=1` l'autorise ponctuellement.

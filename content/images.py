@@ -44,7 +44,7 @@ IMAGES_DIR  = Path("data/images")
 CACHE_FILE  = IMAGES_DIR / "cache.json"
 
 FOURNISSEURS = ("pexels", "cloudflare", "wan2gp")
-FOURNISSEUR_DEFAUT = "pexels"
+FOURNISSEUR_DEFAUT = "wan2gp"
 # Fournisseurs qui dessinent au lieu de chercher : ils reçoivent une composition
 # décrite, la consigne de style, et jamais le titre de la vidéo.
 GENERATIFS = frozenset({"cloudflare", "wan2gp"})
@@ -75,14 +75,13 @@ def _repli_actif(explicite: "bool | None" = None) -> bool:
     """
     Indique si le repli Cloudflare → Pexels est autorisé.
 
-    Actif par défaut, contrairement au repli vocal : une photo n'engage pas
-    l'identité de la chaîne autant qu'une voix, et l'alternative n'est pas une
-    autre illustration mais un fond nu. Le désactiver (IMAGE_FALLBACK=0) garantit
-    en revanche que toutes les vidéos partagent le même registre visuel.
+    Inactif par défaut depuis le passage en local (28/10/2026) : Pexels est une
+    API tierce, et l'alternative n'est qu'un fond nu — le dégradé, que la
+    charte préfère de toute façon. `IMAGE_FALLBACK=1` le rouvre.
     """
     if explicite is not None:
         return explicite
-    return os.getenv("IMAGE_FALLBACK", "1").strip().lower() not in _FAUX
+    return os.getenv("IMAGE_FALLBACK", "0").strip().lower() not in _FAUX
 
 
 def _sauter_schemas(explicite: "bool | None" = None) -> bool:
