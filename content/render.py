@@ -292,6 +292,14 @@ async def _rendre(html_files: list[Path], durees: dict[str, int],
     from playwright.async_api import async_playwright
 
     sortie_dir.mkdir(parents=True, exist_ok=True)
+    # Un clip d'une slide disparue du script resterait dans le dossier, et
+    # `make assemble`, qui monte tout le dossier, le mettrait en fin de vidéo :
+    # observé le 30/10/2026, la slide en double du 28 revenait après la conclusion.
+    attendus = {html.stem for html in html_files}
+    for perime in sortie_dir.glob("*.mp4"):
+        if perime.stem not in attendus:
+            logger.info("Clip périmé retiré : %s", perime.name)
+            perime.unlink()
 
     async with async_playwright() as p:
         navigateur = await p.chromium.launch(args=ARGS_CHROMIUM)
