@@ -708,6 +708,58 @@ def _graphic_svg(
     """
     if not graphique:
         return ""
+    if erreur_graphique(graphique, verifier_rendu=False):
+        logger.warning("Figure mal formée, slide sans figure : %.120s", graphique)
+        return ""
+    try:
+        return _rendu_graphique(graphique, w, h, mots, duree_ms)
+    except _ERREURS_DE_FORME as exc:
+        # Une figure mal formée ne doit jamais emporter le rendu de toute la vidéo :
+        # le graphe du script l'a normalement renvoyée au modèle (`erreur_graphique`).
+        logger.warning("Figure %s illisible (%s : %s), slide sans figure",
+                       graphique.get("type"), type(exc).__name__, exc)
+        return ""
+
+
+# Ce que produit une donnée de schéma d'un type inattendu : une chaîne à la place
+# d'un objet, un texte à la place d'un nombre, une liste à la place d'un objet.
+_ERREURS_DE_FORME = (TypeError, AttributeError, KeyError, ValueError, IndexError)
+# Types dont le rendu ne dépend que des données : seuls ceux-là s'essaient à
+# blanc. Une scène attend son clip, une figure d'article son image.
+_TYPES_VERIFIABLES = frozenset({
+    "stat", "etapes", "couches", "comparaison", "liste", "neurones", "cycle",
+    "matrice", "frise", "embranchement", "venn", "terminal", "recap",
+})
+
+
+def erreur_graphique(graphique: object, verifier_rendu: bool = True) -> str:
+    """
+    Ce qui rend une figure inutilisable, en une phrase adressée au modèle ;
+    chaîne vide si elle est bonne. Mesuré le 28/10/2026 : Gemma 4 rendait
+    tantôt `graphique` en liste, tantôt des items en simples chaînes, et le
+    graphe du script plantait au lieu de demander une correction.
+
+    Args:
+        verifier_rendu: Rendre aussi la figure à blanc — seulement pour les
+                        types qui ne dépendent que de leurs données (ni fichier
+                        d'article, ni clip de scène)
+    """
+    if not graphique:
+        return ""
+    if not isinstance(graphique, dict) or not isinstance(graphique.get("donnees", {}), dict):
+        return "« graphique » doit être un objet {\"type\": ..., \"donnees\": {...}}"
+    if not verifier_rendu or graphique.get("type") not in _TYPES_VERIFIABLES:
+        return ""
+    try:
+        _rendu_graphique(graphique, 970, CANEVAS_H, None, 0)
+    except _ERREURS_DE_FORME as exc:
+        return f"les données ne suivent pas le format du type « {graphique.get('type')} » ({exc})"
+    return ""
+
+
+def _rendu_graphique(graphique: dict, w: int, h: int,
+                     mots: "list[dict] | None", duree_ms: int) -> str:
+    """Rendu proprement dit d'une figure, sans filet : voir `_graphic_svg`."""
     gtype = graphique.get("type", "")
     donnees = graphique.get("donnees", {})
     # Import local : figures_dev importe lui-même ses helpers depuis ce module.

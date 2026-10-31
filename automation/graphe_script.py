@@ -36,10 +36,14 @@ from automation.workflow import Sujet, sujet_multi_sources
 logger = logging.getLogger(__name__)
 
 # Corrections permises au-delà de la première rédaction, tous contrôles
-# confondus. Chacune coûte un appel au LLM : avec 2, une vidéo en consomme au
-# plus 3, contre 1 avant le graphe. Un budget commun plutôt qu'un par contrôle,
-# pour que ce plafond-là soit le seul à retenir.
-MAX_CORRECTIONS = 2
+# confondus. Un budget commun plutôt qu'un par contrôle, pour que ce plafond-là
+# soit le seul à retenir. 2 tant que chaque appel mordait sur un quota ; 4
+# depuis le passage en local (28/10/2026) : une correction de Gemma coûte ~12 s
+# et rien d'autre, et deux ne suffisaient pas — observé sur « Amazon Is Gutting
+# Its AI Division », chaque tour réparait un défaut et en laissait un autre. En
+# repli (OpenRouter, ~50 requêtes gratuites par jour), 5 appels par vidéo
+# restent dans le palier.
+MAX_CORRECTIONS = 4
 
 # Un sujet libre ne bascule sur le corpus que si celui-ci apporte au moins deux
 # sources. Un seul article proche du seuil donnerait une vidéo titrée d'après le
@@ -60,7 +64,8 @@ class EtatScript(TypedDict, total=False):
         origine:            D'où vient la matière : source, corpus, agent, fabrique
         script:             Dernier script rédigé
         faits_non_traces:   Nombres et sigles absents de la matière
-        figures_creuses:    Figures sans mesure réelle, scène manquante
+        figures_creuses:    Figures sans mesure réelle, règles de narration
+        conseils:           Souhaits joints à une correction, sans en causer une
         defauts_mise_en_page: {slide_id: [défauts]} du dernier script
         corrections:        Rédactions faites au-delà de la première
     """
@@ -72,6 +77,7 @@ class EtatScript(TypedDict, total=False):
     script: dict
     faits_non_traces: list[str]
     figures_creuses: list[str]
+    conseils: list[str]
     defauts_mise_en_page: dict[str, list[str]]
     corrections: int
 
@@ -95,6 +101,12 @@ _NOMBRE = re.compile(r"\d+(?:[   ]\d{3}(?!\d))*(?:[.,]\d+)?")
 # Un sigle : au moins deux majuscules dans un même mot (GPT, LLaMA, CIFAR).
 _SIGLE = re.compile(r"\b(?=[A-Za-z0-9]*[A-Z][A-Za-z0-9]*[A-Z])[A-Za-z][A-Za-z0-9]*\b")
 
+# Un mot tout en capitales de plus de cinq lettres est une insistance
+# (« VRAIMENT », écrit par Gemma le 28/10/2026), pas un sigle : ceux qu'un
+# modèle invente sont courts (ROI, AGI, GPU). Un chiffre ou une minuscule
+# (GPT4, LLaMA) le garde sigle.
+_INSISTANCE = re.compile(r"[A-ZÀ-Ý]{6,}")
+
 # Sigles du français courant ou du réseau social, absents des sources anglaises
 # sans être des faits.
 _SIGLES_ADMIS = {"IA", "OK", "TIKTOK"}
@@ -105,7 +117,8 @@ def _textes_du_script(script: dict) -> list[str]:
     textes = [str(script.get(champ) or "") for champ in _CHAMPS_TEXTE]
     for slide in script.get("slides") or []:
         textes += [str(slide.get("titre") or ""), str(slide.get("contenu") or "")]
-        donnees = (slide.get("graphique") or {}).get("donnees")
+        graphique = slide.get("graphique")
+        donnees = graphique.get("donnees") if isinstance(graphique, dict) else graphique
         if donnees:
             # Un « 92 » sur une barre se voit autant qu'il s'entend : les
             # valeurs et libellés des schémas sont des faits comme le texte lu.
@@ -152,9 +165,9 @@ def faits_non_traces(script: dict, reference: str) -> list[str]:
 
     Les entiers inférieurs à 10 sont ignorés : « 3 étapes » ou « 2 idées »
     décrivent la vidéo, pas la source.
-    ponytail: heuristique sur l'écrit, sans compréhension — un mot en
-    capitales d'insistance (« VRAIMENT ») passerait pour un sigle. Le budget de
-    corrections borne le coût d'une fausse alerte à un appel.
+    ponytail: heuristique sur l'écrit, sans compréhension — un long sigle tout
+    en capitales (« NVIDIA ») passe pour une insistance (`_INSISTANCE`). Le
+    budget de corrections borne le coût de l'inverse à un appel.
     """
     texte = "\n".join(_textes_du_script(script))
     connus = _nombres_de_la_source(reference)
@@ -170,7 +183,7 @@ def faits_non_traces(script: dict, reference: str) -> list[str]:
             ecarts.append(brut.strip())
 
     for sigle in _SIGLE.findall(texte):
-        if sigle.upper() in _SIGLES_ADMIS:
+        if sigle.upper() in _SIGLES_ADMIS or _INSISTANCE.fullmatch(sigle):
             continue
         # « GANs », « LLMs » : le pluriel français d'un sigle anglais.
         cherche = sigle[:-1] if re.fullmatch(r"[A-Z0-9]+s", sigle) else sigle
@@ -196,46 +209,174 @@ def _nombre(valeur: object) -> "float | None":
         return None
 
 
-def figures_creuses(script: dict, scenes_offertes: bool) -> list[str]:
+def reparer_figures(script: dict) -> list[str]:
     """
-    Figures qui dessinent une mesure sans en avoir, et scène absente.
+    Change en `liste` de ses libellés toute `comparaison` sans écart mesuré.
 
-    Args:
-        script:          Script JSON produit par le LLM
-        scenes_offertes: Le type `scene` était proposé (Wan2GP présent)
+    Renvoyée au modèle, elle ne convergeait pas : sur un article sans chiffre
+    à comparer (« Amazon Is Gutting Its AI Division », 28/10/2026), Gemma
+    rendait [1, 0], puis [None, None] au tour suivant. Le code sait réparer,
+    sans appel : les libellés sont justes, seules les valeurs sont inventées,
+    et une liste n'en affiche aucune.
+
+    Returns:
+        Le titre des slides réparées ; le script est modifié en place.
+    """
+    reparees: list[str] = []
+    for slide in script.get("slides") or []:
+        graphique = slide.get("graphique") if isinstance(slide, dict) else None
+        if not isinstance(graphique, dict) or graphique.get("type") != "comparaison":
+            continue
+        donnees = graphique.get("donnees") if isinstance(graphique.get("donnees"), dict) else {}
+        items = [i for i in donnees.get("items") or [] if isinstance(i, dict)]
+        valeurs = [_nombre(i.get("valeur")) for i in items]
+        if None in valeurs or len(set(valeurs)) < 2 or set(valeurs) <= {0.0, 1.0}:
+            libelles = [str(i["label"]) for i in items if i.get("label")]
+            slide["graphique"] = {"type": "liste", "donnees": {"items": libelles}} if libelles else None
+            reparees.append(slide.get("titre", ""))
+    return reparees
+
+
+# L'introduction prolonge l'accroche sur le même écran, sans entrée. Le
+# 30/10/2026, 75 mots y tenaient 30 s quand les autres slides durent 11 à
+# 14 s. Médiane des scripts existants : 44 mots ; la vidéo Qwen3.8, la plus
+# vue, en avait 36.
+ECRAN_ACCUEIL_MAX_MOTS = 40
+_FIN_DE_PHRASE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZÀ-Ý«\"])")
+
+
+def reparer_ouverture(script: dict) -> list[str]:
+    """
+    Ramène l'accroche et l'introduction à leurs deux premières phrases.
+
+    Le prompt en demande deux chacune ; la troisième est presque toujours du
+    remplissage (« Reste jusqu'à la fin pour… », « Prépare-toi à voir… »), et
+    la couper ne coûte pas de tour au modèle.
+
+    Returns:
+        Les champs raccourcis ; le script est modifié en place.
+    """
+    coupes: list[str] = []
+    for champ in ("hook", "introduction"):
+        phrases = _FIN_DE_PHRASE.split(str(script.get(champ) or "").strip())
+        if len(phrases) > 2:
+            script[champ] = " ".join(phrases[:2])
+            coupes.append(champ)
+    return coupes
+
+
+def figures_creuses(script: dict) -> list[str]:
+    """
+    Figures inutilisables, ou qui dessinent une mesure sans en avoir.
+
+    Une `comparaison` sans écart n'y figure plus : `reparer_figures` l'a
+    changée en liste avant ce contrôle.
 
     Returns:
         Un message par défaut, adressé au modèle ; vide si rien à redire.
     """
+    from content.slides import erreur_graphique
+
     defauts: list[str] = []
-    types = []
     for slide in script.get("slides") or []:
+        titre = slide.get("titre", "")
+        erreur = erreur_graphique(slide.get("graphique"))
+        if erreur:
+            defauts.append(f"La figure de la slide « {titre} » est inutilisable : {erreur}. "
+                           "Respecte exactement le format donné pour ce type.")
+            continue
         graphique = slide.get("graphique") or {}
         gtype, donnees = graphique.get("type"), graphique.get("donnees") or {}
-        types.append(gtype)
-        titre = slide.get("titre", "")
         if gtype == "stat" and not re.search(r"\d", str(donnees.get("valeur", ""))):
             defauts.append(
                 f"La slide « {titre} » est un \"stat\" sans chiffre "
                 f"(« {donnees.get('valeur', '')} ») : l'anneau mesure une valeur. "
                 "Donne le chiffre du résumé, ou choisis un autre type."
             )
-        if gtype == "comparaison":
-            valeurs = [_nombre(i.get("valeur")) for i in donnees.get("items") or []
-                       if isinstance(i, dict)]
-            if None in valeurs or len(set(valeurs)) < 2 or set(valeurs) <= {0.0, 1.0}:
-                defauts.append(
-                    f"La slide « {titre} » est une \"comparaison\" sans écart mesuré "
-                    f"({valeurs}) : des barres à 0 et 1, ou égales, inventent une "
-                    "mesure. Compare des valeurs du résumé, ou choisis un autre type."
-                )
-    if scenes_offertes and "scene" not in types and "liste" in types:
-        defauts.append(
-            "Aucune slide ne porte de \"scene\", alors que c'est le choix par défaut "
-            "d'une slide narrative. Remplace au moins une \"liste\" par une scène "
-            "de la mascotte."
-        )
     return defauts
+
+
+def conseil_scene(script: dict, scenes_offertes: bool) -> list[str]:
+    """
+    Une scène de la mascotte souhaitée, jamais exigée.
+
+    Un conseil voyage avec une correction déjà due, sans en causer une :
+    Gemma l'a ignoré trois tours de suite, et chaque tour qu'il déclenchait
+    seul était un appel perdu.
+    """
+    types = [s.get("graphique", {}).get("type") for s in script.get("slides") or []
+             if isinstance(s, dict) and isinstance(s.get("graphique"), dict)]
+    if scenes_offertes and "scene" not in types and "liste" in types:
+        return ["Aucune slide ne porte de \"scene\", alors que c'est le choix par défaut "
+                "d'une slide narrative. Remplace au moins une \"liste\" par une scène "
+                "de la mascotte."]
+    return []
+
+
+# ── Règles de narration ───────────────────────────────────────────────────────
+#
+# Comparatif du 28/10/2026, Gemma 4 en local : trois scripts sans un fait
+# inventé, mais une accroche en « Et si » que le prompt interdit, un `recap`
+# sans terminal en guise de conclusion, des « tu » et des « vous » dans la même
+# vidéo, et un anneau de 53,2 % que la voix ne prononçait jamais (« des
+# résultats bluffants »). Ce qu'une règle écrite peut vérifier se vérifie ici ;
+# le reste — l'accroche porte-t-elle, l'analogie tient-elle — relève du juge.
+
+_OUVERTURES_BANNIES = ("et si", "imaginez", "imagine ", "saviez-vous", "tu savais")
+_TU = re.compile(r"\b(tu|toi|ton|ta|tes|t')\b|-toi\b", re.IGNORECASE)
+_VOUS = re.compile(r"\b(vous|votre|vos)\b", re.IGNORECASE)
+
+
+def regles_non_tenues(script: dict) -> list[str]:
+    """
+    Règles du prompt que le script enfreint, chacune en une consigne au modèle.
+
+    Returns:
+        Une phrase par manquement ; vide si le script les tient toutes.
+    """
+    defauts: list[str] = []
+    slides = [s for s in script.get("slides") or [] if isinstance(s, dict)]
+    accroche = str(script.get("hook") or "").strip()
+    if accroche.lower().startswith(_OUVERTURES_BANNIES):
+        defauts.append(f"L'accroche s'ouvre par « {accroche[:20]}… », formule que le prompt "
+                       "interdit. Ouvre par une affirmation, un chiffre brut ou une question directe.")
+
+    accueil = len(accroche.split()) + len(str(script.get("introduction") or "").split())
+    if accueil > ECRAN_ACCUEIL_MAX_MOTS:
+        defauts.append(f"L'accroche et l'introduction partagent le premier écran et y font "
+                       f"{accueil} mots : {ECRAN_ACCUEIL_MAX_MOTS} au plus à elles deux (environ "
+                       "17 s). Deux phrases courtes pour l'accroche, une salutation et une "
+                       "annonce brève pour l'introduction.")
+
+    lus = " ".join([accroche, str(script.get("introduction") or ""), str(script.get("conclusion") or "")]
+                   + [str(s.get("contenu") or "") for s in slides])
+    if _TU.search(lus) and _VOUS.search(lus):
+        defauts.append("Le script mélange « tu » et « vous » : tutoie le spectateur partout.")
+
+    terminal_vu = False
+    for slide in slides:
+        graphique = slide.get("graphique") if isinstance(slide.get("graphique"), dict) else {}
+        gtype, titre = graphique.get("type"), slide.get("titre", "")
+        terminal_vu = terminal_vu or gtype == "terminal"
+        if gtype == "recap" and not terminal_vu:
+            defauts.append(f"La slide « {titre} » est un \"recap\" sans terminal avant elle : "
+                           "ce type ne résume que des commandes montrées. Choisis un autre type.")
+        if gtype in ("stat", "comparaison"):
+            donnees = graphique.get("donnees") if isinstance(graphique.get("donnees"), dict) else {}
+            montres = _valeurs_ecrites(donnees.get("valeur", "")) | {
+                v for it in donnees.get("items") or [] if isinstance(it, dict)
+                for v in _valeurs_ecrites(it.get("valeur", ""))}
+            # Le chiffre du schéma lui-même, pas n'importe lequel : « Gemini 3.6
+            # Flash » dans la narration laissait passer un anneau de 53,2 % muet.
+            if montres and not montres & _valeurs_ecrites(slide.get("contenu") or ""):
+                defauts.append(f"La slide « {titre} » montre un chiffre que la voix ne dit pas : "
+                               "prononce dans « contenu » la valeur du schéma, telle que le résumé la donne.")
+    return defauts
+
+
+def _valeurs_ecrites(texte: object) -> set[float]:
+    """Nombres d'un texte, virgule ou point décimal : « 53,2 % » et 53.2 se retrouvent."""
+    return {float(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", str(texte))}
 
 
 # ── Nœuds ─────────────────────────────────────────────────────────────────────
@@ -315,6 +456,7 @@ def _consignes(etat: EtatScript) -> str:
         )
     if not problemes:
         return ""
+    problemes += etat.get("conseils") or []
 
     precedent = {k: v for k, v in etat["script"].items() if k not in _CHAMPS_AJOUTES}
     return (
@@ -371,23 +513,34 @@ def noeud_rediger(etat: EtatScript) -> EtatScript:
         )
         return {"corrections": MAX_CORRECTIONS}
     return {"script": script, "corrections": corrections,
-            "faits_non_traces": [], "figures_creuses": [], "defauts_mise_en_page": {}}
+            "faits_non_traces": [], "figures_creuses": [], "conseils": [],
+            "defauts_mise_en_page": {}}
 
 
 def noeud_verifier_faits(etat: EtatScript) -> EtatScript:
-    """Relève les faits absents de la matière, et les figures creuses."""
+    """Répare ce que le code sait réparer, puis relève faits absents et figures creuses."""
     from media import wan2gp
 
-    sujet = etat["sujet"]
-    ecarts = faits_non_traces(etat["script"], f"{sujet.titre}\n{sujet.resume}")
+    sujet, script = etat["sujet"], etat["script"]
+    # Avant le relevé des faits : les valeurs inventées d'une comparaison
+    # réparée disparaissent avec elle.
+    for titre in reparer_figures(script):
+        logger.info("Comparaison sans écart changée en liste : « %s »", titre)
+    for champ in reparer_ouverture(script):
+        logger.info("%s ramené à deux phrases", champ)
+    ecarts = faits_non_traces(script, f"{sujet.titre}\n{sujet.resume}")
     if ecarts:
         logger.warning("Faits absents de la matière : %s", ", ".join(ecarts))
     else:
         logger.info("Faits vérifiés : tout se retrouve dans la matière")
-    creuses = figures_creuses(etat["script"], scenes_offertes=not wan2gp.absence())
+    # Même canal que les figures creuses : une consigne de forme de plus, sur le
+    # même budget de corrections.
+    creuses = figures_creuses(script) + regles_non_tenues(script)
     for defaut in creuses:
         logger.warning("Figure refusée : %s", defaut)
-    return {"faits_non_traces": ecarts, "figures_creuses": creuses}
+    conseils = conseil_scene(script, scenes_offertes=not wan2gp.absence())
+    return {"script": script, "faits_non_traces": ecarts, "figures_creuses": creuses,
+            "conseils": conseils}
 
 
 def noeud_verifier_mise_en_page(etat: EtatScript) -> EtatScript:

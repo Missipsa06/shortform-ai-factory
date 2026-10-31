@@ -25,6 +25,7 @@ image par image. Leurs classes sont décrites dans `_ANIM_CSS` (slides.py).
 
 import logging
 import math
+import re
 
 from content.slides import (
     ACCENT,
@@ -453,6 +454,16 @@ def schema_couches(donnees: dict, w: int, h: int,
 
 # ── comparaison ──────────────────────────────────────────────────────────────
 
+def _valeur_lue(valeur: object) -> "float | None":
+    """Nombre porté par une valeur : 92, « 92 », « 92 % », « 3,5 » ; None sinon."""
+    if isinstance(valeur, bool):
+        return None
+    if isinstance(valeur, (int, float)):
+        return float(valeur)
+    m = re.search(r"-?\d+(?:[.,]\d+)?", str(valeur or ""))
+    return float(m.group().replace(",", ".")) if m else None
+
+
 def schema_comparaison(donnees: dict, w: int, h: int,
                        mots: "list[dict] | None" = None, duree_ms: int = 0) -> str:
     """
@@ -464,11 +475,17 @@ def schema_comparaison(donnees: dict, w: int, h: int,
     le type est mal choisi. La barre pousse 180 ms après son bloc : le libellé
     se lit, puis la longueur.
     """
-    items = donnees.get("items", [])[:4]
+    # Un modèle écrit parfois « "92" » ou « "92 %" » au lieu de 92 : mesuré sur
+    # Gemma 4 le 28/10/2026, le rendu plantait sur une division de chaînes. Le
+    # nombre se lit dans la chaîne ; une unité % qu'elle porte devient l'unité.
+    brutes = [it for it in donnees.get("items") or [] if isinstance(it, dict)][:4]
+    items = [{**it, "valeur": v} for it in brutes if (v := _valeur_lue(it.get("valeur"))) is not None]
+    if not donnees.get("unite") and any("%" in str(it.get("valeur")) for it in brutes):
+        donnees = {**donnees, "unite": "%"}
     n = len(items)
     if not n:
         return ""
-    valeurs = [it.get("valeur", 0) for it in items]
+    valeurs = [it["valeur"] for it in items]
     max_val = max(valeurs, default=100) or 100
     departage = len(set(valeurs)) > 1
     if not departage:
@@ -499,7 +516,7 @@ def schema_comparaison(donnees: dict, w: int, h: int,
             f'font-family="{POLICE_SVG}">{_echapper(item.get("label", ""))}</text>',
             f'  <text x="{ZONE_W}" y="{y + 62}" text-anchor="end" '
             f'fill="{"url(#gA)" if tete else TEXTE_DOUX}" font-size="80" font-weight="700" '
-            f'letter-spacing="-2" font-family="{POLICE_TITRE}">{_echapper(val)}</text>',
+            f'letter-spacing="-2" font-family="{POLICE_TITRE}">{_echapper(_nombre(val))}</text>',
             f'  <rect x="0" y="{yb}" width="{ZONE_W}" height="{barre_h}" rx="{barre_h // 2}" '
             f'fill="#FFFFFF" fill-opacity=".05" stroke="#FFFFFF" stroke-opacity=".10" stroke-width="1.5"/>',
             f'  <rect x="0" y="{yb}" width="{largeur}" height="{barre_h}" rx="{barre_h // 2}" '

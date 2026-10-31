@@ -51,8 +51,8 @@ Génère exactement ce JSON (sans markdown, sans backticks) :
 {{
   "titre_video": "Titre accrocheur max 60 caractères, 1 à 2 mots entre ** ** (ex: '**Docker**, c'est quoi vraiment ?')",
   "sous_titre_video": "Une ligne sous le titre, qui dit ce qu'on va comprendre (ex: 'La boîte qui fait tourner ton appli partout pareil.')",
-  "introduction": "Annonce du sujet, 2 phrases max, ton chaleureux. Ex: 'Salut à tous ! Aujourd'hui on décortique ensemble ...'",
-  "hook": "Deux phrases, la première chose entendue, avant la salutation : une accroche qui capte en 3 secondes, puis une raison de rester jusqu'au bout. Voir la section « Accroche » plus bas, elle est impérative",
+  "introduction": "Une salutation et une annonce brève du sujet, 15 mots environ, ton chaleureux. Ex: 'Salut à tous ! Aujourd'hui on décortique ensemble ...'",
+  "hook": "Deux phrases courtes, 25 mots au plus, la première chose entendue, avant la salutation : une accroche qui capte en 3 secondes, puis une raison de rester jusqu'au bout. Accroche et introduction partagent le premier écran : 40 mots au plus à elles deux. Voir la section « Accroche » plus bas, elle est impérative",
   "slides": [
     {{
       "numero": 1,

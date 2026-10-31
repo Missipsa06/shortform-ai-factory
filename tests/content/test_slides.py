@@ -96,6 +96,33 @@ def test_deux_valeurs_proches_donnent_des_colonnes_et_leur_ecart():
     assert "+3,9 pts" in svg
 
 
+def test_une_valeur_ecrite_en_texte_se_lit_comme_un_nombre():
+    """Gemma 4 écrivait « "92 %" » au lieu de 92 : le rendu divisait deux chaînes."""
+    donnees = {"items": [{"label": "IA", "valeur": "92 %"}, {"label": "Humain", "valeur": "78"},
+                         {"label": "Hasard", "valeur": 25}]}
+    svg = _graphic_svg({"type": "comparaison", "donnees": donnees})
+    assert ">92<" in svg and ">78<" in svg
+
+
+@pytest.mark.parametrize("graphique", [
+    [{"type": "stat"}],                                              # une liste au lieu d'un objet
+    {"type": "comparaison", "donnees": ["IA", "Humain"]},             # des données en liste
+    {"type": "stat", "donnees": "95%"},                               # des données en chaîne
+])
+def test_une_figure_mal_formee_ne_plante_pas_et_se_signale(graphique):
+    from content.slides import erreur_graphique
+
+    assert _graphic_svg(graphique) == ""                              # la vidéo se rend quand même
+    assert erreur_graphique(graphique)                                # et le graphe la renvoie au modèle
+
+
+def test_une_figure_bien_formee_n_est_pas_signalee():
+    from content.slides import erreur_graphique
+
+    assert erreur_graphique({"type": "stat", "donnees": {"valeur": "95%"}}) == ""
+    assert erreur_graphique({"type": "scene", "donnees": {"action": "x"}}) == ""   # rendu non essayé
+
+
 def test_un_duel_non_chiffre_retombe_sur_les_barres():
     donnees = {"items": [{"label": "A", "valeur": -5}, {"label": "B", "valeur": 10}]}
     svg = _graphic_svg({"type": "comparaison", "donnees": donnees},

@@ -59,29 +59,90 @@ def _avec(*graphiques: dict) -> dict:
     return {"slides": [{"titre": f"S{i}", "graphique": g} for i, g in enumerate(graphiques)]}
 
 
-def test_un_stat_sans_chiffre_et_une_comparaison_binaire_sont_refuses():
-    """Les deux défauts du script « claude » du 26/10/2026."""
-    s = _avec({"type": "stat", "donnees": {"valeur": "Contexte étendu"}},
-              {"type": "comparaison", "donnees": {"items": [
-                  {"label": "Standard", "valeur": 1}, {"label": "Refus", "valeur": 0}]}})
-    defauts = figures_creuses(s, scenes_offertes=False)
-    assert len(defauts) == 2
-    assert "S0" in defauts[0] and "S1" in defauts[1]
+def test_un_stat_sans_chiffre_est_refuse():
+    """Défaut du script « claude » du 26/10/2026."""
+    s = _avec({"type": "stat", "donnees": {"valeur": "Contexte étendu"}})
+    defauts = figures_creuses(s)
+    assert len(defauts) == 1 and "S0" in defauts[0]
+
+
+@pytest.mark.parametrize("valeurs", [(1, 0), (None, None), (5, 5)])
+def test_une_comparaison_sans_ecart_devient_une_liste_de_ses_libelles(valeurs):
+    """[1, 0] puis [None, None] : Gemma ne convergeait pas, le code répare."""
+    s = _avec({"type": "comparaison", "donnees": {"items": [
+        {"label": "Standard", "valeur": valeurs[0]}, {"label": "Refus", "valeur": valeurs[1]}]}})
+    assert graphe.reparer_figures(s) == ["S0"]
+    assert s["slides"][0]["graphique"] == {"type": "liste", "donnees": {"items": ["Standard", "Refus"]}}
 
 
 def test_de_vraies_mesures_passent():
     s = _avec({"type": "stat", "donnees": {"valeur": "76,8%"}},
               {"type": "comparaison", "donnees": {"items": [
                   {"label": "A", "valeur": 76.8}, {"label": "B", "valeur": "94"}]}})
-    assert figures_creuses(s, scenes_offertes=False) == []
+    assert graphe.reparer_figures(s) == []
+    assert figures_creuses(s) == []
 
 
-def test_une_liste_sans_scene_n_est_refusee_que_si_wan2gp_est_la():
+def test_la_scene_n_est_conseillee_que_si_wan2gp_est_la():
     s = _avec({"type": "liste", "donnees": {"items": ["a", "b"]}})
-    assert figures_creuses(s, scenes_offertes=False) == []
-    assert len(figures_creuses(s, scenes_offertes=True)) == 1
+    assert graphe.conseil_scene(s, scenes_offertes=False) == []
+    assert len(graphe.conseil_scene(s, scenes_offertes=True)) == 1
     s["slides"].append({"titre": "Robot", "graphique": {"type": "scene", "donnees": {}}})
-    assert figures_creuses(s, scenes_offertes=True) == []
+    assert graphe.conseil_scene(s, scenes_offertes=True) == []
+
+
+def test_une_insistance_en_capitales_n_est_pas_un_sigle():
+    """« VRAIMENT » de Gemma le 28/10/2026 ; ROI, court, reste un sigle à tracer."""
+    assert faits_non_traces(_script("C'est VRAIMENT rentable, un ROI record."), SOURCE) == ["ROI"]
+
+
+# ── Règles de narration ───────────────────────────────────────────────────────
+
+def _narration(hook: str = "Une IA bat Gemini en 3D.", **slide) -> dict:
+    return {"hook": hook, "introduction": "Salut à tous !", "conclusion": "Abonne-toi !",
+            "slides": [{"titre": "S1", "contenu": "Elle voit 53,2 % juste.",
+                        "graphique": {"type": "stat", "donnees": {"valeur": "53.2%"}}, **slide}]}
+
+
+def test_un_script_qui_tient_les_regles_passe():
+    assert graphe.regles_non_tenues(_narration()) == []
+
+
+def test_l_ouverture_garde_ses_deux_premieres_phrases():
+    """Cas réel du 30/10/2026 : 75 mots, 30 s sur le même premier écran."""
+    s = {"hook": "Ce modèle bat tout. Mais est-ce durable ? Reste jusqu'à la fin.",
+         "introduction": "Salut à tous ! Aujourd'hui, Gemini 4 Carbon. Prépare-toi à voir 5.5 fois mieux."}
+    assert graphe.reparer_ouverture(s) == ["hook", "introduction"]
+    assert s == {"hook": "Ce modèle bat tout. Mais est-ce durable ?",
+                 "introduction": "Salut à tous ! Aujourd'hui, Gemini 4 Carbon."}
+    assert graphe.reparer_ouverture(s) == []
+
+
+def test_un_premier_ecran_trop_long_est_renvoye_au_modele():
+    s = _narration(" ".join(["mot"] * graphe.ECRAN_ACCUEIL_MAX_MOTS))
+    assert any("premier écran" in d for d in graphe.regles_non_tenues(s))
+
+
+@pytest.mark.parametrize("hook", ["Et si ton IA marchait sans internet ?",
+                                  "Imaginez une IA hors ligne.", "Saviez-vous que l'IA…"])
+def test_une_ouverture_bannie_est_refusee(hook):
+    assert "accroche" in graphe.regles_non_tenues(_narration(hook))[0]
+
+
+def test_tu_et_vous_dans_la_meme_video_sont_refuses():
+    s = _narration(contenu="Vous voyez 53,2 % juste.")              # « Abonne-toi » plus loin
+    assert any("tutoie" in d for d in graphe.regles_non_tenues(s))
+
+
+def test_un_recap_sans_terminal_est_refuse():
+    s = _narration(graphique={"type": "recap", "donnees": {"items": []}})
+    assert any("recap" in d for d in graphe.regles_non_tenues(s))
+
+
+def test_le_chiffre_du_schema_doit_etre_dit_et_pas_un_autre():
+    """« Gemini 3.6 Flash » dans la narration laissait passer un anneau de 53,2 % muet."""
+    s = _narration(contenu="Résultats bluffants, devant Gemini 3.6 Flash.")
+    assert any("chiffre" in d for d in graphe.regles_non_tenues(s))
 
 
 # ── Boucle de correction ──────────────────────────────────────────────────────
@@ -147,6 +208,24 @@ def test_une_slide_qui_deborde_est_renvoyee_puis_le_graphe_se_termine(bac_a_sabl
 
     assert len(redactions) == 1 + MAX_CORRECTIONS
     assert "slide_01" in redactions[1]
+
+
+def test_un_conseil_seul_ne_coute_pas_de_correction(bac_a_sable, monkeypatch):
+    """La scène voyage avec une correction due, elle n'en cause pas une."""
+    redactions, scenario = bac_a_sable
+    monkeypatch.setattr(wan2gp, "absence", lambda: "")       # Wan2GP présent
+    liste = {"type": "liste", "donnees": {"items": ["a", "b"]}}
+    juste, faux = _script("Un FID de 3,17."), _script("Un FID de 2,5.")
+    juste["slides"][0]["graphique"] = faux["slides"][0]["graphique"] = liste
+
+    scenario["scripts"] = [juste]
+    produire_script(SUJET)
+    assert len(redactions) == 1
+
+    redactions.clear()
+    scenario["scripts"] = [faux, juste]
+    produire_script(SUJET)
+    assert "scene" in redactions[1]                          # joint à la correction due
 
 
 def test_une_correction_qui_echoue_garde_le_premier_jet(bac_a_sable, monkeypatch):
