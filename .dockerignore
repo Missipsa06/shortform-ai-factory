@@ -11,8 +11,15 @@ airflow.cfg
 # Sans cette exclusion, chaque build enverrait des dizaines de Mo de vidéos au démon.
 data/
 
-__pycache__/
-*.py[cod]
+# Environnements PyTorch à venv propre (12,6 Go) : 18 min 32 de build contre 71 s,
+# mesuré le 07/11/2026. Un motif est ancré à la racine : `.venv` ne les couvrait pas.
+outils/
+graphify-out/
+docs/
+design/
+
+**/__pycache__/
+**/*.py[cod]
 .pytest_cache/
 .ruff_cache/
 .vscode/
