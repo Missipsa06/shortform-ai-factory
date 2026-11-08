@@ -204,6 +204,50 @@ def test_chaine_ne_repete_pas_le_fournisseur_demande(monkeypatch):
     assert noms[0] == "gemini"
 
 
+def test_un_ollama_arrete_passe_la_main_au_repli(monkeypatch):
+    """
+    Régression du 08/11/2026 : requests dérive ses erreurs réseau d'OSError, et
+    « connexion refusée » sur 11434 était relevée comme une clé manquante. Le
+    pipeline s'arrêtait au lieu de passer à OpenRouter.
+    """
+    import requests
+
+    import content.providers as providers
+
+    monkeypatch.delenv(FALLBACK_ENV, raising=False)
+    for prov in PROVIDERS.values():
+        monkeypatch.setenv(prov.key_env, "une-cle")
+    monkeypatch.setattr(providers, "modeles_candidats", lambda prov: [f"{prov.name}-m"])
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+
+    def appel(prov, modele, *_):
+        if prov.name == "ollama":
+            raise requests.ConnectionError("[WinError 10061] connexion refusée")
+        return "réponse"
+
+    monkeypatch.setattr(providers, "_appel_brut", appel)
+    trace: dict = {}
+    assert providers.call_llm("s", "p", provider="ollama", trace=trace) == "réponse"
+    assert trace["provider"] == "openrouter"
+
+
+def test_une_cle_manquante_reste_une_erreur_de_configuration(monkeypatch):
+    """L'exception ci-dessus ne doit pas avaler les vraies erreurs d'environnement."""
+    import content.providers as providers
+
+    monkeypatch.delenv(FALLBACK_ENV, raising=False)
+    for prov in PROVIDERS.values():
+        monkeypatch.setenv(prov.key_env, "une-cle")
+    monkeypatch.setattr(providers, "modeles_candidats", lambda prov: [f"{prov.name}-m"])
+
+    def appel(*_):
+        raise EnvironmentError("SDK absent")
+
+    monkeypatch.setattr(providers, "_appel_brut", appel)
+    with pytest.raises(EnvironmentError, match="SDK absent"):
+        providers.call_llm("s", "p", provider="ollama")
+
+
 # ── Modèles de secours ──────────────────────────────────────────────────────
 
 def test_modeles_secours_suivent_le_defaut(monkeypatch):

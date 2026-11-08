@@ -706,6 +706,8 @@ def call_llm(
         ValueError:       Fournisseur inconnu
         RuntimeError:     Tous les fournisseurs de la chaîne ont échoué
     """
+    from requests import RequestException
+
     demande = resolve_provider(provider)
 
     # Validée avant l'import du SDK : le message reste le même quel que soit
@@ -753,9 +755,13 @@ def call_llm(
                         raise RuntimeError(
                             "réponse hors contrat : champs attendus absents"
                         )
-                except (EnvironmentError, ValueError):
-                    raise
                 except Exception as e:
+                    # Une clé absente ou un fournisseur inconnu se signale tel quel.
+                    # Mais requests dérive ses erreurs réseau d'OSError, donc
+                    # d'EnvironmentError : un Ollama arrêté passait pour une clé
+                    # manquante et coupait le repli (08/11/2026).
+                    if isinstance(e, (EnvironmentError, ValueError)) and not isinstance(e, RequestException):
+                        raise
                     diag = depuis_exception(e)
 
                     if tentative == 1 and diag.reessayable:
