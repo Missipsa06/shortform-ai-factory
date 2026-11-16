@@ -195,23 +195,26 @@ def _pluriels_muets(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str
     s d'un mot français resté dans la liste ne change rien à l'oreille, il est
     muet aussi.
 
+    Un terme de plusieurs mots ne vaut qu'entier : découpé, « Failure-Transparent
+    Agents » retirait le s de tout « agents » du texte. Un nom propre déclaré
+    avec son s (« Janas ») est un singulier, pas un pluriel à réduire.
+
     ponytail: heuristique — les terminaisons -us, -is, -ss, -os sont épargnées
     (« virus » ne doit pas devenir « viru »), plus une liste d'invariables ; un
     anglicisme invariable absent de `_S_PRONONCE` perdrait son s.
     """
-    singuliers: set[str] = set()
     for terme in termes_anglais:
-        for mot in str(terme).lower().split():
-            if mot in _S_PRONONCE or mot.endswith(("us", "is", "ss", "os")):
-                continue
-            singuliers.add(mot[:-1] if mot.endswith("s") and len(mot) > 3 else mot)
-    if not singuliers:
-        return texte
-    return re.sub(
-        r"(?<!\w)([\w-]+?)s(?!\w)",
-        lambda m: m.group(1) if m.group(1).lower() in singuliers else m.group(0),
-        texte,
-    )
+        terme = str(terme).strip()
+        dernier = terme.split()[-1] if terme else ""
+        bas = dernier.lower()
+        if not dernier or bas in _S_PRONONCE or bas.endswith(("us", "is", "ss", "os")):
+            continue
+        if bas.endswith("s") and dernier[0].isupper() and " " not in terme:
+            continue
+        singulier = terme[:-1] if bas.endswith("s") and len(dernier) > 3 else terme
+        texte = re.sub(rf"(?<!\w)({re.escape(singulier)})s(?!\w)", r"\1", texte,
+                       flags=re.IGNORECASE)
+    return texte
 
 
 _UNITES = ("zéro un deux trois quatre cinq six sept huit neuf dix onze douze treize "
@@ -306,6 +309,21 @@ def _nombres_parles(texte: str) -> str:
     return re.sub(r"(?<![\w\d])\+(\d)", r"plus \1", texte)
 
 
+def _symboles_parles(texte: str) -> str:
+    """
+    Versions, débits et égalités dits en mots : Qwen3 les lit tels qu'écrits.
+
+    Relevé par un juge à l'écoute (Gemini, 31/10/2026) contre Charon, qui les
+    adapte seul : « v1.3.0 » haché, « = » lu « est quand » ou sauté, « tokens/s »
+    lu tel quel. Passe avant `_nombres_parles` : la version doit être reconnue
+    avant que ses chiffres ne soient pris pour une décimale.
+    """
+    texte = re.sub(r"(?<!\w)v(\d+(?:\.\d+)+)(?!\w)",
+                   lambda m: "version " + " point ".join(m.group(1).split(".")), texte)
+    texte = re.sub(r"(?<=\w)/s(?!\w)", " par seconde", texte)
+    return re.sub(r"\s*=\s*", " égale ", texte)
+
+
 def prononcer(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str:
     """
     Adapte le texte à la lecture par Qwen3 : pluriels muets, graphie phonétique.
@@ -316,7 +334,7 @@ def prononcer(texte: str, termes_anglais: "list[str] | tuple" = ()) -> str:
     à chaque occurrence, mesuré le 24/10/2026. Les pluriels passent d'abord : le
     dictionnaire est écrit au singulier.
     """
-    texte = _nombres_parles(_pluriels_muets(texte, termes_anglais))
+    texte = _nombres_parles(_symboles_parles(_pluriels_muets(texte, termes_anglais)))
     for motif, graphie in _prononciations():
         texte = motif.sub(graphie, texte)
     return texte

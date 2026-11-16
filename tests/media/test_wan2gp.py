@@ -59,6 +59,19 @@ def test_sans_termes_anglais_aucun_pluriel_n_est_touche():
     assert prononcer("Des agents et des modèles.") == "Des agents et des modèles."
 
 
+def test_un_terme_de_plusieurs_mots_ne_vaut_qu_entier():
+    """Découpé, « Failure-Transparent Agents » faisait « des agent » (31/10/2026)."""
+    termes = ["Failure-Transparent Agents", "pull request"]
+    assert prononcer("Des agents et des pull requests.", termes) == \
+        "Des agents et des pull request."
+
+
+def test_un_nom_propre_garde_son_s():
+    """« Janas » devenait « Jana » : déclaré avec son s, c'est un singulier."""
+    assert prononcer("Janas charge les experts.", ["Janas", "experts"]) == \
+        "Janas charge les expert."
+
+
 @pytest.mark.parametrize("ecrit,dit", [
     ("30.1K heures de vidéo", "trente mille cent heures de vidéo"),
     ("663 articles, 7 500 visiteurs et 45000 vues", "663 articles, sept mille cinq cents visiteurs et quarante-cinq mille vues"),
@@ -69,6 +82,9 @@ def test_sans_termes_anglais_aucun_pluriel_n_est_touche():
     ("Qwen gagne +13,9 points, x3 plus vite", "Qwen gagne plus 13,9 points, fois 3 plus vite"),
     ("GPT-5.6 et Qwen3.5 de 2024-2026", "GPT-5.6 et Qwen3.5 de 2024-2026"),   # des noms, pas des nombres
     ("88,6 % sur RoboTwin 2.0", "88,6 % sur RoboTwin 2.0"),                 # une version, pas une décimale
+    ("Scores JevBench v1.3.0.", "Scores JevBench version 1 point 3 point 0."),
+    ("52 000 tokens/s", "cinquante-deux mille tokens par seconde"),
+    ("Une conversation = un tableau JSON", "Une conversation égale un tableau JSON"),
 ])
 def test_les_nombres_s_ecrivent_comme_ils_se_disent(ecrit, dit):
     """Qwen3 lit ce qu'on lui donne : « 30.1K » était entendu « 30 points cas »."""
